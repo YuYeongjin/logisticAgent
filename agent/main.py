@@ -5,56 +5,93 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.utilities import SQLDatabase
 from langchain_experimental.sql import SQLDatabaseChain
 
-# 1. API 키 설정 (무료 계층 사용)
 
-
-# 2. State 정의
 class GraphState(TypedDict):
     input: str
-    retrieved: Optional[str]
+    target_wh: Optional[str] # 분석된 타겟 창고
     response: Optional[str]
 
-# 3. 모델 및 DB 설정
-llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
-db = SQLDatabase.from_uri("mysql+pymysql://root:Abcd1234@localhost:3306/digital_twin")
-db_chain = SQLDatabaseChain.from_llm(llm, db, verbose=True)
 
-# 4. 노드 함수들
+models = {
+    "A": joblib.load("model_Whse_A.pkl"),
+    "C": joblib.load("model_Whse_C.pkl"),
+    "J": joblib.load("model_Whse_J.pkl"),
+    "S": joblib.load("model_Whse_S.pkl")
+}
+le_product = joblib.load("le_product.pkl")
+
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+
+
 def retrieve_from_db(state: GraphState) -> GraphState:
-    print("--- [Log] DB에서 정보 찾는 중... ---")
-    query = state["input"]
-    prompt = f"질문: {query}\n위 질문에 대해 SQL을 생성해 조회하고 한국어로 설명해줘. 결과가 없으면 'null'을 포함해."
-    try:
-        retrieved = db_chain.invoke(prompt)
-    except Exception as e:
-        print(f"Error: {e}")
-        retrieved = "null"
-    return {"input": state["input"], "retrieved": retrieved}
+    print("--- 질문 분석 중 (창고 분류) ---")
+    prompt = f"질문: {state['input']}\n이 질문은 A, C, J, S 창고 중 어디에 대한 것인지 알파벳 한 글자로만 답해. 해당 없으면 'unknown'이라고 해."
+    res = llm.invoke(prompt)
+    target = res.content.strip().upper()
+    return {"target_wh": target}
 
 def run_llm(state: GraphState) -> GraphState:
-    print("--- [Log] AI 지식으로 답변 생성 중... ---")
+    print("--- AI로 답변 생성 중... ---")
+    response = llm.invoke(state["input"])
+    return {"response": response.content}
+def run_model_a(state: GraphState) -> GraphState:
+    print("--- a model... ---")
+    response = llm.invoke(state["input"])
+    return {"response": response.content}
+def run_model_c(state: GraphState) -> GraphState:
+    print("--- c model... ---")
+    response = llm.invoke(state["input"])
+    return {"response": response.content}
+
+def run_model_j(state: GraphState) -> GraphState:
+    print("--- j model... ---")
+    response = llm.invoke(state["input"])
+    return {"response": response.content}
+
+def run_model_s(state: GraphState) -> GraphState:
+    print("--- s model... ---")
     response = llm.invoke(state["input"])
     return {"response": response.content}
 
 def return_retrieved(state: GraphState) -> GraphState:
-    print("--- [Log] DB 결과 반환 중... ---")
+    print("--- DB 결과 반환 중... ---")
     return {"response": state["retrieved"]}
 
 def should_use_retrieved(state: GraphState) -> str:
     if state["retrieved"] and "null" not in state["retrieved"].lower():
         return "use_retrieved"
+    if state["retrieved"] and "a" not in state["retrieved"].lower():
+        return "run_model_a"
+    if state["retrieved"] and "c" not in state["retrieved"].lower():
+        return "run_model_c"
+    if state["retrieved"] and "j" not in state["retrieved"].lower():
+        return "run_model_j"
+    if state["retrieved"] and "s" not in state["retrieved"].lower():
+        return "run_model_s"
     return "use_llm"
 
-# 5. 그래프 빌드
 builder = StateGraph(GraphState)
 builder.add_node("retrieve", retrieve_from_db)
 builder.add_node("use_llm", run_llm)
 builder.add_node("use_retrieved", return_retrieved)
 
+builder.add_node("run_model_a", run_model_a)
+builder.add_node("run_model_c", run_model_c)
+builder.add_node("run_model_j", run_model_j)
+builder.add_node("run_model_s", run_model_s)
+builder.add_edge("run_model_a","use_llm")
+builder.add_edge("run_model_c","use_llm")
+builder.add_edge("run_model_j","use_llm")
+builder.add_edge("run_model_s","use_llm")
+
 builder.set_entry_point("retrieve")
 builder.add_conditional_edges("retrieve", should_use_retrieved, {
     "use_llm": "use_llm",
-    "use_retrieved": "use_retrieved"
+    "use_retrieved": "use_retrieved",
+    "run_model_a":"run_model_a",
+    "run_model_c":"run_model_c",
+    "run_model_j":"run_model_j",
+    "run_model_s":"run_model_s"
 })
 builder.set_finish_point("use_llm")
 builder.set_finish_point("use_retrieved")
@@ -63,7 +100,7 @@ graph = builder.compile()
 
 # 6. 실행 (Main)
 if __name__ == "__main__":
-    print("=== 스마트 팩토리 AI 에이전트 가동 ===")
-    user_input = input("질문을 입력하세요: ")
+    print("=== 물류 AI 에이전트  ===")
+    user_input = input("항목을 입력하세요: ")
     result = graph.invoke({"input": user_input})
     print("\n[최종 답변]:", result["response"])

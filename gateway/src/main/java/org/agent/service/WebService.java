@@ -13,4 +13,6 @@ public interface WebService {
     Map<String, Object> learningModel(MultipartFile file, List<String> columns, String category, String target_recommendation, String description, List<String> samples);
 
     Map<String, Object> getModels();
+
+    Map<String, Object> chatVoiceImage(MultipartFile voiceFile, MultipartFile imageFile, String input);
 }

@@ -20,7 +20,8 @@ import java.util.Map;
 
 @Slf4j
 public class WeatherAlert {
-
+    private static final String govermentKey = "MvdWDyz96xFc2dxh1FEm3x5uvTjgMr9i%2FD2IqwKxMg0nYoS7%2Br1Evs3dR2fpnFSOvqD8JCKl%2FzMu4ucYrZeYMA%3D%3D";
+    private static final String kakaoKey = "48326e85016a9a42d0bacba28768fabe";
     private static final String BASE_URL = "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtNcst";
     private static final String BASE_CAST_URL = "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtFcst";
     private static final String KAKAOMAP_URL = "https://dapi.kakao.com/v2/local/geo/coord2regioncode";

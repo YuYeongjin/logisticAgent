@@ -168,6 +168,41 @@ public class WebServiceImpl implements WebService {
         );
     }
 
+    @Override
+    public Map<String, Object> chatVoiceImage(MultipartFile voiceFile, MultipartFile imageFile, String input) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+
+        // 2. 바디 구성 (LinkedMultiValueMap 필수)
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("input", input);
+
+        // 음성 파일 처리
+        if (voiceFile != null && !voiceFile.isEmpty()) {
+            System.out.println("@@ 음성들어감 @@ ");
+            body.add("voice_file", voiceFile.getResource());
+        }
+        // 이미지 파일 처리
+        if (imageFile != null && !imageFile.isEmpty()) {
+            System.out.println("@@ 그림들어감 @@ ");
+            body.add("image_file", imageFile.getResource());
+        }
+
+        // 3. 요청 생성
+        HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
+
+        // 4. FastAPI 서버 호출
+        Map<String, Object> result = restTemplate.postForObject(
+                URI.create("http://localhost:8003/chat"),
+                requestEntity,
+                Map.class
+        );
+
+        result.put("message", input);
+        System.out.println("result :: " + result);
+        return result;
+    }
+
     private Map<String, Object> processCsv(MultipartFile file) {
         Map<String, Object> result = new HashMap<>();
         Map<String,Object> reqLLM = new HashMap<>();

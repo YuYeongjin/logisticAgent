@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import AxiosCustom from "../../config/AxiosCustom";
 import SpeechRecognition, { useSpeechRecognition } from 'react-speech-recognition';
 
-export default function ViewAPI() {
+export default function DashboardAPI() {
     const [messages, setMessages] = useState([]);
     const [audio, setAudio] = useState(null);
     const [image, setImage] = useState(null);

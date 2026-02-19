@@ -24,6 +24,17 @@ export default function Topbar({ setViewComponent }) {
                     Prompt
                 </button>
                 <button
+                    onClick={() => handleTabClick('dashboard')}
+                    style={{
+                        ...styles.tabButton,
+                        borderBottom: currentTab === 'dashboard' ? '3px solid #007bff' : '3px solid transparent',
+                        color: currentTab === 'dashboard' ? '#007bff' : '#666',
+                        fontWeight: currentTab === 'dashboard' ? '700' : '500',
+                    }}
+                >
+                    Dashboard
+                </button>
+                <button
                     onClick={() => handleTabClick('traning')}
                     style={{
                         ...styles.tabButton,
@@ -52,7 +63,7 @@ const styles = {
     },
     tabContainer: {
         display: 'flex',
-        gap: '20px', 
+        gap: '20px',
         height: '100%',
     },
     tabButton: {

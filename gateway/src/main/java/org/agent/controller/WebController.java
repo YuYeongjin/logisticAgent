@@ -11,7 +11,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api")
-@CrossOrigin(origins = "*")
+@CrossOrigin(origins = "http://localhost:3000")
 public class WebController {
 
     WebService webService;
@@ -20,15 +20,23 @@ public class WebController {
         this.webService = webService;
     }
 
+//    @PostMapping("/chat")
+//    public ResponseEntity<?> handleChat(@RequestBody Map<String, Object> request) {
+//
+//        String userMessage = request.get("message").toString();
+//
+//        Map<String,Object> response = webService.chat(userMessage);
+//
+//        return ResponseEntity.ok(response);
+//    }
     @PostMapping("/chat")
-    public ResponseEntity<?> handleChat(@RequestBody Map<String, Object> request) {
-
-        String userMessage = request.get("message").toString();
-
-        Map<String,Object> response = webService.chat(userMessage);
-
-        return ResponseEntity.ok(response);
+    public ResponseEntity<?> chat(
+            @RequestPart(value="input", required = false) String input,
+            @RequestPart(value = "voice_file", required = false) MultipartFile voiceFile,
+            @RequestPart(value= "image_file", required = false) MultipartFile imageFile) {
+        return ResponseEntity.ok(webService.chatVoiceImage(voiceFile, imageFile, input));
     }
+
 
     @PostMapping("/upload")
     public ResponseEntity<?> handleUpload(@RequestParam("file") MultipartFile file) {

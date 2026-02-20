@@ -15,4 +15,6 @@ public interface WebService {
     Map<String, Object> getModels();
 
     Map<String, Object> chatVoiceImage(MultipartFile voiceFile, MultipartFile imageFile, String input);
+
+    Map<String, Object> captureImage(String input, MultipartFile imageFile, String cameraId);
 }

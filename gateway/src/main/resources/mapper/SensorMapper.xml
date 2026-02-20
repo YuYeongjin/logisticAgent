@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="org.agent.database.dao.SensorDAO">
+
+    <insert id="insertData" parameterType="org.agent.database.dto.SensorDTO">
+        INSERT INTO SENSOR_DATA (location, temperature, timestamp, humidity)
+        VALUES (#{location}, #{temperature}, #{timestamp}, #{humidity})
+    </insert>
+
+    <select id="getAll" resultType="map">
+        SELECT * FROM SENSOR_DATA LIMIT 100
+    </select>
+
+    <select id="getAvgData" parameterType="map" resultType="map">
+        SELECT
+            COALESCE(AVG(temperature), 0) AS temperature,
+            COALESCE(AVG(humidity), 0)    AS humidity
+        FROM SENSOR_DATA
+        WHERE location = #{location}
+            /* PostgreSQL은 백틱 대신 큰따옴표를 쓰거나 생략합니다 */
+          AND timestamp >= #{start_time}
+    </select>
+    <insert id="insertLog">
+        INSERT INTO service_log
+        (log_level, diff_score,message,source)
+        VALUES
+        (#{logLevel},#{diffScore},#{message},#{source})
+    </insert>
+</mapper>

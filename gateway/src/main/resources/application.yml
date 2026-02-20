@@ -1,6 +1,8 @@
 spring:
   application:
     name: agent
+  profiles:
+    active: '@spring.profiles.active@'
   servlet:
     multipart:
       max-file-size: 100MB
@@ -8,5 +10,24 @@ spring:
 server:
   port: 6060
   address: 0.0.0.0
-
+minio:
+  endpoint: http://localhost:9000   # API (S3 업로드/다운로드용)
+  console:  http://localhost:9001   # UI 접속용
+  accessKey: admin                   # secret에서 쓴 ID
+  secretKey: Abcd1234                   # secret에서 쓴 PW
+  bucket: factory-minio                         # 사용할 버킷 이름
+  region: us-east-1 #ap-northeast-2
+mybatis:
+  mapper-locations: classpath:mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
 ---
+spring:
+  config:
+    activate:
+      on-profile: dev
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    url: jdbc:postgresql://localhost:5432/factory_db
+    username: admin
+    password: Abcd1234

@@ -11,7 +11,6 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api")
-@CrossOrigin(origins = "http://localhost:3000")
 public class WebController {
 
     WebService webService;
@@ -58,5 +57,14 @@ public class WebController {
     @PostMapping("/getModels")
     public ResponseEntity<?> handleGetModels() {
         return ResponseEntity.ok(webService.getModels());
+    }
+
+    @PostMapping("/capture/image")
+    public ResponseEntity<?> captureImage(
+            @RequestPart(value="input", required = false) String input,
+            @RequestPart(value= "image_file", required = false) MultipartFile imageFile,
+            @RequestPart(value= "camera_id", required = false) String cameraId
+            ){
+        return ResponseEntity.ok(webService.captureImage(input,imageFile,cameraId));
     }
 }

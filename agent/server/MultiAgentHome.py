@@ -24,6 +24,8 @@ import tempfile
 import numpy as np
 from skimage.metrics import structural_similarity as ssim
 
+from minio import Minio
+import io
 # ===============================
 # Action / State
 # ===============================
@@ -48,7 +50,7 @@ class GraphState(TypedDict, total=False):
 
     voice_path: Optional[str]
     image_path: Optional[str]
-
+    image_name: Optional[str]
     weather: Optional[dict]
     temperature: Optional[float]
     rain_flag: Optional[int]
@@ -63,7 +65,7 @@ class GraphState(TypedDict, total=False):
     vision_status: VisionStatus
     predictions: List[PredictionResult]
     response: Optional[str]
-
+    log_level: Optional[str]
 
 # ===============================
 # LLM
@@ -91,6 +93,14 @@ stt_model = WhisperModel("small", device="cpu")
 # ===============================
 # Model Registry
 # ===============================
+minio_client = Minio(
+    "localhost:9000",
+    access_key="admin",
+    secret_key="Abcd1234",
+    secure=False
+)
+BUCKET_NAME = "factory-minio"
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 MODEL_DIR = BASE_DIR / "models"
@@ -128,36 +138,123 @@ def stt_node(state: GraphState) -> GraphState:
     text = " ".join(seg.text for seg in segments)
     return {"input": text}
 
-BASE_IMAGE_PATH = BASE_DIR / "server" / "image" / "KakaoTalk_Photo_2026-02-19-10-22-08 004.jpeg"
 
+# def vision_node(state: GraphState) -> GraphState:
+#     if not state.get("image_path"):
+#         return {}
+
+#     if not BASE_IMAGE_PATH.exists():
+#         print(f"[Vision][ERROR] Baseline image not found: {BASE_IMAGE_PATH}")
+#         return {
+#             "response": "기준 이미지가 설정되지 않았습니다."
+#         }
+#     current = Image.open(state["image_path"]).convert("L").resize((512, 512))
+#     baseline = Image.open(BASE_IMAGE_PATH).convert("L").resize((512, 512))
+
+#     current_np = np.array(current)
+#     baseline_np = np.array(baseline)
+
+#     score, _ = ssim(baseline_np, current_np, full=True)
+
+#     diff = 1 - score  # 차이 점수 (0 ~ 1)
+
+#     action = VisionStatus.ABNORMAL if diff > 0.15 else VisionStatus.NORMAL
+
+#     print(f"[Vision] diff score: {diff:.4f}")
+
+#     return {
+#         "diff_score": diff,
+#         "vision_status": action
+#     }
+import re
+import numpy as np
+import io
+from PIL import Image
+from skimage.metrics import structural_similarity as ssim
 
 def vision_node(state: GraphState) -> GraphState:
-    if not state.get("image_path"):
+    # 1. 입력된 최신 이미지 정보 가져오기
+    current_key = state.get("image_path") # 예: cam_1_1771569517877.jpg
+    print(f"[*] current_key : {current_key}")
+    if not current_key:
         return {}
+    print("image @@@@")
+    # 2. 파일명에서 카메라 ID 추출 (cam_1, cam_2 등)
+    match = re.match(r"(cam_\d+)", state.get("image_name"))
+    if not match:
+        print("???????")
+        return {"response": "잘못된 파일 형식입니다."}
+    print("t1")
+    target_cam = match.group(1)
+    
+    # 3. MinIO에서 해당 카메라의 과거 파일 목록 필터링 및 정렬
+    objects = list(minio_client.list_objects(BUCKET_NAME))
+    all_files = [obj.object_name for obj in objects if obj.object_name.startswith(target_cam)]
+    all_files.sort(reverse=True) # 최신순 정렬
 
-    if not BASE_IMAGE_PATH.exists():
-        print(f"[Vision][ERROR] Baseline image not found: {BASE_IMAGE_PATH}")
+    if len(all_files) < 3:
+        return {"response": f"[{target_cam}] 분석을 위한 기초 데이터(최소 3장)가 부족합니다."}
+    print("t2")
+    try:
+        # [데이터 로드]
+        # A: 현재 이미지 (방금 들어온 것)
+        curr_img = get_minio_image(all_files[0])
+        # B: 직전 이미지 (단기 변화 체크)
+        prev_img = get_minio_image(all_files[1])
+        # C: 기준 이미지 (오늘의 첫 이미지 - 장기 변위 체크)
+        anchor_img = get_minio_image(all_files[-1])
+
+        # [다각도 수치 분석]
+        # 1. 단기 변화율 (Short-term): 갑작스러운 물체 등장이나 카메라 흔들림 감지
+        score_short, _ = ssim(prev_img, curr_img, full=True)
+        diff_short = 1 - score_short
+
+        # 2. 장기 변화율 (Long-term): 시간이 지나며 발생하는 미세한 구조적 변형 감지
+        score_long, _ = ssim(anchor_img, curr_img, full=True)
+        diff_long = 1 - score_long
+
+        # 3. 최근 3장 일관성 (Consistency): 변화가 없어야 하는 상태인지 확인
+        # 최근 이미지들이 서로 얼마나 비슷한지 평균을 냄
+        consistency_scores = []
+        for i in range(min(len(all_files)-1, 3)):
+            img_a = get_minio_image(all_files[i])
+            img_b = get_minio_image(all_files[i+1])
+            consistency_scores.append(1 - ssim(img_a, img_b))
+        avg_consistency = np.mean(consistency_scores)
+
+        # [종합 판정 로직]
+        status = VisionStatus.NORMAL
+        log_level = "info"
+        # 수치는 현장 상황에 맞게 튜닝 필요 (0.1~0.15 권장)
+        if diff_short > 0.12 or diff_long > 0.15:
+            status = VisionStatus.ABNORMAL
+            log_level = "warn"
+        if diff_short > 0.2 or diff_long > 0.5:
+            log_level = "danger"
+        print("t3")
+        report = (
+            f"--- {target_cam} 분석 보고서 ---\n"
+            f"1. 단기 변화량: {diff_short:.4f} (직전 대비)\n"
+            f"2. 장기 누적치: {diff_long:.4f} (최초 대비)\n"
+            f"3. 최근 일관성: {avg_consistency:.4f}\n"
+            f"결과: {'이상 감지' if status == VisionStatus.ABNORMAL else '정상 유지'}"
+        )
+        print(report)
+        print(log_level)
         return {
-            "response": "기준 이미지가 설정되지 않았습니다."
+            "diff_score": diff_short,
+            "vision_status": status,
+            "response": report,
+            "log_level":log_level,
         }
-    current = Image.open(state["image_path"]).convert("L").resize((512, 512))
-    baseline = Image.open(BASE_IMAGE_PATH).convert("L").resize((512, 512))
 
-    current_np = np.array(current)
-    baseline_np = np.array(baseline)
+    except Exception as e:
+        return {"response": f"[{target_cam}] 분석 중 오류 발생: {str(e)}"}
 
-    score, _ = ssim(baseline_np, current_np, full=True)
+def get_minio_image(name):
+    obj = minio_client.get_object(BUCKET_NAME, name)
+    return np.array(Image.open(io.BytesIO(obj.read())).convert("L").resize((512, 512)))
 
-    diff = 1 - score  # 차이 점수 (0 ~ 1)
-
-    action = VisionStatus.ABNORMAL if diff > 0.15 else VisionStatus.NORMAL
-
-    print(f"[Vision] diff score: {diff:.4f}")
-
-    return {
-        "diff_score": diff,
-        "vision_status": action
-    }
 def explain_abnormal_node(state: GraphState) -> GraphState:
     print("explain_abnormal_node")
 
@@ -168,15 +265,20 @@ def explain_abnormal_node(state: GraphState) -> GraphState:
     변화 점수: {state['diff_score']:.3f}
 
     작업자가 이해할 수 있도록
-    가능한 원인을 간단히 한글로 설명하세요.
+    이유를 한줄로 짧게 한글로 설명하세요.
     """
 
     res = llm_chat.invoke(prompt)
     print(f"[Vision] res: {res}")
-    return {"response": res.content}
+    return {
+        "response": res.content,
+        "log_level": state.get("log_level", "warn"),
+        "diff_score": state.get("diff_score", 0.0)
+    }
 
 
 def analyze_prompt(state: GraphState) -> GraphState:
+    print("analyze_prompt")
     registry = get_registered_models()
     model_context = "\n".join(
         f"- {m['id']} ({m['features']})"
@@ -267,7 +369,7 @@ def run_dynamic_models(state: GraphState) -> GraphState:
 
 
 def run_general_llm(state: GraphState) -> GraphState:
-
+    print("run_general_llm")
     prompt = f"""
     너는 veneta AI Agent 입니다.
     {state.get("input")}
@@ -279,6 +381,7 @@ def run_general_llm(state: GraphState) -> GraphState:
 
 
 def run_model_llm(state: GraphState) -> GraphState:
+    print("run_model_llm")
     p = state["predictions"][0]
     prompt = f"""
     너는 veneta AI Agent 입니다.
@@ -357,6 +460,10 @@ app = FastAPI(title="Veneta AI Agent (STT + OCR)")
 class ChatResponse(BaseModel):
     response: str
 
+class ImageResponse(BaseModel):
+    response: str
+    log_level: str
+    diff_score: float
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(
@@ -364,6 +471,7 @@ async def chat(
     weather: Optional[str] = Form(None),
     voice_file: Optional[UploadFile] = File(None),
     image_file: Optional[UploadFile] = File(None),
+    image_name: Optional[str] = Form(None)
 ):
     state: GraphState = {}
     print(f"\n--- [FastAPI 수신 로그] ---")
@@ -398,9 +506,68 @@ async def chat(
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
             f.write(await image_file.read())
             state["image_path"] = f.name
+            state["image_name"] = image_name
 
     result = graph.invoke(state)
-    return ChatResponse(response=result.get("response", "응답 없음"))
+    final_response = result.get("response", "응답 없음")
+
+    return ChatResponse(
+        response=final_response,
+    )
+
+
+@app.post("/imageCheck", response_model=ImageResponse)
+async def imageCheck(
+    input: Optional[str] = Form(None),
+    weather: Optional[str] = Form(None),
+    voice_file: Optional[UploadFile] = File(None),
+    image_file: Optional[UploadFile] = File(None),
+    image_name: Optional[str] = Form(None)
+):
+    state: GraphState = {}
+    print(f"\n--- [FastAPI 수신 로그] ---")
+    print(f"텍스트 입력(input): {input}")
+    print(f"날씨 데이터(weather): {weather}")
+    print(f"음성 파일 여부: {voice_file is not None}")
+    print(f"이미지 파일 여부: {image_file is not None}")
+    if input:
+        state["input"] = input
+
+    if weather:
+        state["weather"] = json.loads(weather)
+
+    if voice_file:
+        # 1. 파일 데이터 읽기
+        content = await voice_file.read()
+        print(f"[*] 수신된 음성 파일 크기: {len(content)} bytes")
+        
+        if len(content) == 0:
+            print("[!] 에러: 수신된 파일이 비어 있습니다.")
+            return ChatResponse(response="음성 데이터가 비어 있습니다.")
+
+        # 2. 임시 파일 생성 및 강제 쓰기
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(content)
+            tmp.flush()  # 버퍼 강제 비우기
+            os.fsync(tmp.fileno()) # 디스크에 물리적 기록 보장
+            state["voice_path"] = tmp.name
+            print(f"[*] 임시 파일 생성 완료: {tmp.name}")
+
+    if image_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
+            f.write(await image_file.read())
+            state["image_path"] = f.name
+            state["image_name"] = image_name
+
+    result = graph.invoke(state)
+    final_response = result.get("response", "응답 없음")
+    log_level = result.get("log_level", "info") # 기본값 info
+    diff_score = result.get("diff_score",0.0)
+    return ImageResponse(
+        response=final_response,
+        log_level=log_level,
+        diff_score=float(diff_score)
+    )
 
 
 if __name__ == "__main__":

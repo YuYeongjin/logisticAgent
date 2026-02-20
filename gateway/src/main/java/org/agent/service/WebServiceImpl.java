@@ -4,8 +4,11 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.agent.database.dao.SensorDAO;
+import org.agent.service.s3.S3Service;
 import org.agent.service.weather.WeatherAlert;
 import org.apache.poi.ss.usermodel.*;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -31,7 +34,11 @@ import org.springframework.web.multipart.MultipartFile;
 @RequiredArgsConstructor
 public class WebServiceImpl implements WebService {
 
+    private final S3Service s3Service;
+    private final SensorDAO sensorDAO;
     RestTemplate restTemplate = new RestTemplate();
+    @Value("${minio.bucket}")
+    private String bucketName;
 
     @Override
     public Map<String, Object> chat(String message) {
@@ -200,6 +207,55 @@ public class WebServiceImpl implements WebService {
 
         result.put("message", input);
         System.out.println("result :: " + result);
+        return result;
+    }
+
+    @Override
+    public Map<String, Object> captureImage(String input, MultipartFile imageFile, String cameraId) {
+
+        // minio add
+        try {
+            s3Service.upload(
+                    bucketName,
+                    imageFile.getOriginalFilename(),
+                    imageFile.getInputStream(),
+                    imageFile.getContentType(),
+                    imageFile.getSize()
+            );
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+
+
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("input", input);
+        if (imageFile != null && !imageFile.isEmpty()) {
+            body.add("image_file", imageFile.getResource());
+            body.add("image_name", imageFile.getOriginalFilename());
+        }
+        HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
+
+        // 4. FastAPI 서버 호출
+        Map<String, Object> result = restTemplate.postForObject(
+                URI.create("http://localhost:8003/imageCheck"),
+                requestEntity,
+                Map.class
+        );
+        System.out.println("result :: " + result);
+
+        if(result != null){
+            switch (result.get("log_level").toString()){
+                case "warn":
+                case "danger" :
+                    sensorDAO.insertLog(result.get("log_level").toString(), Double.parseDouble( result.get("diff_score").toString()),result.get("response").toString(),"imageCheck");
+                    break;
+            }
+
+        }
         return result;
     }
 

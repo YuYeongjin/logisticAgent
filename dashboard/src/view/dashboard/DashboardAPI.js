@@ -17,7 +17,17 @@ export default function DashboardAPI() {
     const [data, setData] = useState([]);
     const [latest, setLatest] = useState();
     const SOCKET_HTTP_URL = "http://192.168.10.20:6060/ws/sensor";
-
+    const [logData, setLogData] = useState([]);
+    const [imageList, setImageList] = useState([]);
+    const [currentDate, setCurrentDate] = useState(new Date().toLocaleDateString());
+    const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString());
+    useEffect(() => {
+        const timer = setInterval(() => {
+            setCurrentDate(new Date().toLocaleDateString());
+            setCurrentTime(new Date().toLocaleTimeString());
+        }, 1000);
+        return () => clearInterval(timer);
+    }, []);
     // socket connect
     useEffect(() => {
         const client = new Client({
@@ -36,6 +46,11 @@ export default function DashboardAPI() {
                         setLatest(msg.body);
                         setData((prev) => [...prev, msg.body]);
                     }
+                });
+
+                client.subscribe("/topic/logs", (msg) => {
+                    console.log("Received:", msg.body);
+                    setLogData(prev => [JSON.parse(msg.body), ...prev]);
                 });
             },
             onDisconnect: () => {
@@ -135,7 +150,8 @@ export default function DashboardAPI() {
         setMessages(prev => [...prev, myMsg]);
         try {
             const response = await AxiosCustom.post('/api/chat', formData, {
-                headers: { 'Content-Type': 'multipart/form-data' }
+                headers: { 'Content-Type': 'multipart/form-data' },
+                withCredentials: true
             });
             setAudio(null);
             setImage(null);
@@ -225,6 +241,60 @@ export default function DashboardAPI() {
         };
     }, [isAutoCapturing, captureInterval, captureAndSend]);
 
+    async function getImage() {
+        try {
+            const response = await AxiosCustom.post('/api/capture/getOneDay', {
+                currentDate: currentDate
+            });
+
+            const data = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+            setImageList(data.result)
+            console.log(data.result);
+        } catch (error) {
+            console.error(error);
+        }
+    }
+
+
+    const cameras = [
+        { id: 1, name: "1번 작업", status: "NORMAL", color: "#4caf50", isLocal: false, url: "https://via.placeholder.com/300x180/1a1a1a/ffffff?text=CAM+01" },
+        { id: 2, name: "2번 작업", status: "NOTICE", color: "#ff9800", isLocal: false, url: "https://via.placeholder.com/300x180/1a1a1a/ffffff?text=CAM+02" },
+        { id: 3, name: "3번 작업", status: "WARNING", color: "#f44336", isLocal: true }
+    ];
+    const videoRefs = useRef({});
+    // 이미지 캡처
+    useEffect(() => {
+        const setupCameras = async () => {
+            const stream = await getCameraStream();
+            if (stream) {
+                // 정의된 모든 로컬 카메라 video 태그에 동일 스트림 할당
+                // (나중에 여러 대의 웹캠을 쓸 경우 여기서 장치별로 할당 가능)
+                cameras.forEach(cam => {
+                    const videoEl = videoRefs.current[cam.id];
+                    if (videoEl) {
+                        videoEl.srcObject = stream;
+                    }
+                });
+            }
+        };
+        setupCameras();
+    }, []);
+    useEffect(() => {
+        let intervalId;
+        if (isAutoCapturing) {
+            intervalId = setInterval(() => {
+                cameras.forEach(cam => {
+                    const videoEl = videoRefs.current[cam.id];
+                    if (videoEl && videoEl.readyState >= 2) {
+
+                        captureAndSend(cam.id, videoEl);
+                        getImage();
+                    }
+                });
+            }, captureInterval * 1000);
+        }
+        return () => clearInterval(intervalId);
+    }, [isAutoCapturing, captureInterval, captureAndSend]);
     return {
         messages,
         onSend,
@@ -242,6 +312,11 @@ export default function DashboardAPI() {
         sensorData: data,
         latestSensor: latest,
         envData,
-        captureAndSend
+        captureAndSend,
+        logData,
+        imageList,
+        currentTime,
+        videoRefs,
+        cameras,
     };
 }

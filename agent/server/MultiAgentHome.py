@@ -27,6 +27,12 @@ from skimage.metrics import structural_similarity as ssim
 from minio import Minio
 import io
 # ===============================
+# Database
+# ===============================
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
+# ===============================
 # Action / State
 # ===============================
 
@@ -39,6 +45,9 @@ class VisionStatus(str, Enum):
     NORMAL = "NORMAL"
     ABNORMAL = "ABNORMAL"
 
+class VoiceStatus(str, Enum):
+    CHECK = "CHECK"
+    SKIP = "SKIP"
 class PredictionResult(BaseModel):
     prediction: float
     inferred_params: Dict[str, Any]
@@ -63,6 +72,7 @@ class GraphState(TypedDict, total=False):
   
     diff_score: float
     vision_status: VisionStatus
+    voice_status: VoiceStatus
     predictions: List[PredictionResult]
     response: Optional[str]
     log_level: Optional[str]
@@ -83,6 +93,19 @@ llm_chat = ChatOllama(
     temperature=0.7,
     base_url="http://localhost:11434"
 )
+# ===============================
+# 데이터베이스 접속정보 
+# ===============================
+DB_CONFIG = {
+    "host": "localhost",
+    "database": "factory_db",
+    "user": "admin",
+    "password": "Abcd1234",
+    "port": "5432"
+}
+
+def get_db_connection():
+    return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
 
 # ===============================
 # STT / OCR 초기화
@@ -125,10 +148,13 @@ def get_registered_models():
 # ===============================
 # Nodes
 # ===============================
+def init_node(state: GraphState) -> str:
+    return {}
 
-def stt_node(state: GraphState) -> GraphState:
+def voice_node(state: GraphState) -> GraphState:
     if not state.get("voice_path"):
-        return {}
+        status = VoiceStatus.SKIP
+        return {"vision_status":status}
     print("voice @@@@")
     segments, _ = stt_model.transcribe(
         state["voice_path"],
@@ -136,36 +162,28 @@ def stt_node(state: GraphState) -> GraphState:
     )
 
     text = " ".join(seg.text for seg in segments)
-    return {"input": text}
+    status = VoiceStatus.CHECK
+    return {"input": text,
+            "vision_status": status,
+        }
 
+def voice_llm(state:GraphState) -> GraphState:
+    print("voice_llm")
 
-# def vision_node(state: GraphState) -> GraphState:
-#     if not state.get("image_path"):
-#         return {}
+    prompt = f"""
+    너는 veneta AI Agent 입니다.
+    공장 설비 소리가 기준 상태 대비 이상 변화가 감지되었습니다.
 
-#     if not BASE_IMAGE_PATH.exists():
-#         print(f"[Vision][ERROR] Baseline image not found: {BASE_IMAGE_PATH}")
-#         return {
-#             "response": "기준 이미지가 설정되지 않았습니다."
-#         }
-#     current = Image.open(state["image_path"]).convert("L").resize((512, 512))
-#     baseline = Image.open(BASE_IMAGE_PATH).convert("L").resize((512, 512))
+    데시벨 및 소리를 텍스트화 하여 문제를 분석해봐
+    """
 
-#     current_np = np.array(current)
-#     baseline_np = np.array(baseline)
-
-#     score, _ = ssim(baseline_np, current_np, full=True)
-
-#     diff = 1 - score  # 차이 점수 (0 ~ 1)
-
-#     action = VisionStatus.ABNORMAL if diff > 0.15 else VisionStatus.NORMAL
-
-#     print(f"[Vision] diff score: {diff:.4f}")
-
-#     return {
-#         "diff_score": diff,
-#         "vision_status": action
-#     }
+    res = llm_chat.invoke(prompt)
+    print(f"[Voice] res: {res}")
+    return {
+        "response": res.content,
+        "log_level": state.get("log_level", "warn"),
+        "diff_score": state.get("diff_score", 0.0)
+    }
 import re
 import numpy as np
 import io
@@ -255,8 +273,8 @@ def get_minio_image(name):
     obj = minio_client.get_object(BUCKET_NAME, name)
     return np.array(Image.open(io.BytesIO(obj.read())).convert("L").resize((512, 512)))
 
-def explain_abnormal_node(state: GraphState) -> GraphState:
-    print("explain_abnormal_node")
+def image_llm(state: GraphState) -> GraphState:
+    print("image_llm")
 
     prompt = f"""
     너는 veneta AI Agent 입니다.
@@ -396,7 +414,12 @@ def run_model_llm(state: GraphState) -> GraphState:
 # ===============================
 # Graph
 # ===============================
-
+def route_init(state: GraphState) -> str:
+    if state.get("voice_path"):
+        return "voice"
+    if state.get("image_path"):
+        return "vision"
+    return "prompt"
 def route_input(state: GraphState) -> str:
     if state.get("action") == Action.USE_MODEL:
         return "model"
@@ -409,25 +432,50 @@ def route_image(state: GraphState) -> str:
     if state.get("vision_status") == VisionStatus.NORMAL:
         return "skip"
     return "skip"
+def route_voice(state: GraphState) -> str:
+    if state.get("voice_status") == VoiceStatus.CHECK:
+        return "explain"
+    if state.get("voice_status") == VoiceStatus.SKIP:
+        return "skip"
+    return "skip"
 
 builder = StateGraph(GraphState)
 
-builder.add_node("stt", stt_node)
+builder.add_node("init",init_node)
+builder.add_node("voice", voice_node)
 builder.add_node("vision", vision_node)
 builder.add_node("analyze_prompt", analyze_prompt)
-builder.add_node("explain_abnormal_node",explain_abnormal_node)
+builder.add_node("voice_llm",voice_llm)
+builder.add_node("image_llm",image_llm)
 builder.add_node("weather", analyze_weather)
 builder.add_node("model", run_dynamic_models)
 builder.add_node("model_llm", run_model_llm)
 builder.add_node("llm", run_general_llm)
 
-builder.set_entry_point("stt")
-builder.add_edge("stt", "vision")
+builder.set_entry_point("init")
+builder.add_conditional_edges(
+    "init",
+    route_init,
+    {
+        "voice": "voice",
+        "vision": "vision",
+        "prompt": "analyze_prompt"
+    }
+)
+
+builder.add_conditional_edges(
+    "voice",
+    route_voice,
+    {
+        "explain": "voice_llm",
+        "skip": "analyze_prompt"
+    }
+)
 builder.add_conditional_edges(
     "vision",
     route_image,
     {
-        "explain": "explain_abnormal_node",
+        "explain": "image_llm",
         "skip": "analyze_prompt"
     }
 )
@@ -446,10 +494,9 @@ builder.add_edge("weather", "model")
 builder.set_finish_point("model")
 builder.set_finish_point("llm")
 builder.set_finish_point("model_llm")
-builder.set_finish_point("explain_abnormal_node")
+builder.set_finish_point("image_llm")
 
 graph = builder.compile()
-
 # ===============================
 # FastAPI
 # ===============================

@@ -3,11 +3,9 @@ package org.agent.service.mqtt;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.agent.database.dao.SensorDAO;
 import org.agent.database.dto.SensorDTO;
-import org.agent.service.s3.S3Service;
 import org.apache.poi.ss.usermodel.*;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.beans.factory.annotation.Value;
 
 @Service
 public class MqttServiceImpl implements MqttService {

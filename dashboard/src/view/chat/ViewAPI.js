@@ -24,7 +24,7 @@ export default function ViewAPI() {
     if (!browserSupportsSpeechRecognition) {
         console.warn("이 브라우저는 음성 인식을 지원하지 않습니다.");
     }
-    
+
     const startListening = () => {
         resetTranscript();
         setIsRecording(true);
@@ -62,8 +62,9 @@ export default function ViewAPI() {
         };
         setMessages(prev => [...prev, myMsg]);
         try {
-            const response = await AxiosCustom.post('/api/chat', formData, {
-                headers: { 'Content-Type': 'multipart/form-data' }
+            const response = await AxiosCustom.post('/api/sop/chat', formData, {
+                headers: { 'Content-Type': 'multipart/form-data' },
+                withCredentials: true
             });
             setAudio(null);
             setImage(null);
@@ -86,7 +87,7 @@ export default function ViewAPI() {
         onSend,
         setMessages,
         setAudio,
-        setImage,image,
+        setImage, image,
         startListening, stopListening, isRecording, transcript,
         inputText, setInputText
     };

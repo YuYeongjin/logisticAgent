@@ -2,6 +2,7 @@ package org.agent.service;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import jakarta.servlet.http.HttpSession;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.agent.database.dao.SensorDAO;
@@ -14,6 +15,7 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -24,6 +26,10 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URI;
+import java.time.Duration;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 import com.google.gson.JsonObject;
@@ -34,6 +40,7 @@ import org.springframework.web.multipart.MultipartFile;
 @RequiredArgsConstructor
 public class WebServiceImpl implements WebService {
 
+    private final SimpMessagingTemplate simpMessagingTemplate;
     private final S3Service s3Service;
     private final SensorDAO sensorDAO;
     RestTemplate restTemplate = new RestTemplate();
@@ -200,7 +207,8 @@ public class WebServiceImpl implements WebService {
 
         // 4. FastAPI 서버 호출
         Map<String, Object> result = restTemplate.postForObject(
-                URI.create("http://localhost:8003/chat"),
+//                URI.create("http://localhost:8003/chat"),
+                URI.create("http://localhost:8005/sop"),
                 requestEntity,
                 Map.class
         );
@@ -212,7 +220,9 @@ public class WebServiceImpl implements WebService {
 
     @Override
     public Map<String, Object> captureImage(String input, MultipartFile imageFile, String cameraId) {
-
+        ZonedDateTime zonedDateTime = ZonedDateTime.now(ZoneId.of("Asia/Seoul"));
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH:mm:ss");
+        String formattedDateTimeKOR = zonedDateTime.format(formatter);
         // minio add
         try {
             s3Service.upload(
@@ -252,10 +262,69 @@ public class WebServiceImpl implements WebService {
                 case "warn":
                 case "danger" :
                     sensorDAO.insertLog(result.get("log_level").toString(), Double.parseDouble( result.get("diff_score").toString()),result.get("response").toString(),"imageCheck");
+                    result.put("time",formattedDateTimeKOR);
+                    simpMessagingTemplate.convertAndSend("/topic/logs", result);
                     break;
             }
 
         }
+        return result;
+    }
+
+    @Override
+    public Map<String, Object> getOneDayImage(Map<String, String> request) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("result",s3Service.getImagesByDate(bucketName, request.get("currentDate"),Duration.ofDays(1)));
+        return result;
+    }
+    @Override
+    public Map<String, Object> chatSop(
+            MultipartFile voiceFile,
+            MultipartFile imageFile,
+            String input,
+            HttpSession session
+    ) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+
+        Map<String, Object> sopState =
+                (Map<String, Object>) session.getAttribute("SOP_STATE");
+
+        if (sopState == null) {
+            sopState = new HashMap<>();
+            sopState.put("step", 1);
+        } else {
+            int step = (int) sopState.getOrDefault("step", 1);
+            sopState.put("step", step + 1);
+        }
+        System.out.println("@@@ sopState : " + sopState);
+        System.out.println("@@@ session.getId() : " + session.getId());
+        // 세션에 반드시 다시 저장
+        session.setAttribute("SOP_STATE", sopState);
+
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("input", input);
+        body.add("session_id", session.getId());
+        if (voiceFile != null && !voiceFile.isEmpty()) {
+            body.add("voice_file", voiceFile.getResource());
+        }
+
+        if (imageFile != null && !imageFile.isEmpty()) {
+            body.add("image_file", imageFile.getResource());
+        }
+
+        HttpEntity<MultiValueMap<String, Object>> request =
+                new HttpEntity<>(body, headers);
+
+        Map<String, Object> result =
+                restTemplate.postForObject(
+                        "http://localhost:8005/sop",
+                        request,
+                        Map.class
+                );
+
+//        sopState.putAll(result);
+//        session.setAttribute("SOP_STATE", sopState);
         return result;
     }
 

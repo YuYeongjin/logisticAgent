@@ -1,5 +1,6 @@
 package org.agent.service;
 
+import jakarta.servlet.http.HttpSession;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
@@ -17,4 +18,8 @@ public interface WebService {
     Map<String, Object> chatVoiceImage(MultipartFile voiceFile, MultipartFile imageFile, String input);
 
     Map<String, Object> captureImage(String input, MultipartFile imageFile, String cameraId);
+
+    Map<String, Object> getOneDayImage(Map<String, String> request);
+
+    Map<String, Object> chatSop(MultipartFile voiceFile, MultipartFile imageFile, String input, HttpSession session);
 }

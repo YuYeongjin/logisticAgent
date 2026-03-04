@@ -245,19 +245,20 @@ def analyze_prompt(state: GraphState) -> GraphState:
     3. GENERAL: 그 외 일반적인 대화
     
     사용자 입력: "{user_input}"
-    결과는 반드시 'CREATE', 'RETRIEVE', 'GENERAL' 중 하나만 출력하라.
+    - 출력은 반드시 CREATE, RETRIEVE, GENERAL 중 하나여야 한다.
+    - 다른 단어, 문장, 설명 없이 답해라
+    - 출력 예시:
+    RETRIEVE or CREATE or GENERAL
     """
     res = llm_chat.invoke(prompt)
+    print(f"res :: {res.content}")
+    raw = res.content.upper()
     intent = res.content.strip().upper()
-    print(f"intent :: {intent}")
-    print(f"intent :: {intent}")
-    print(f"intent :: {intent}")
-    print(f"intent :: {intent}")
+    print(f"intent :: {raw}")
     if intent == "CREATE": state["action"] = Action.USE_MODEL
     elif intent == "RETRIEVE": state["action"] = Action.RETRIEVE
     else: state["action"] = Action.GENERAL_CHAT
 
-        
     return state
 
 
@@ -487,7 +488,7 @@ def retrieve_node(state: GraphState) -> GraphState:
 
 
 def general_llm(state: GraphState) -> GraphState:
-    print("general_llm")
+    print("@@@@@@@@general_llm@@@@@@@@@")
     history_block = f"""
     [누적 히스토리]
     텍스트: {", ".join(state.get("text_history", []))}
@@ -504,7 +505,7 @@ def general_llm(state: GraphState) -> GraphState:
     현재 질문
     {state.get("input")}
 
-    대답은 짧고 간단하게 해.
+    대답은 짧고 친절하고 간단하게 해.
     """
 
     res = llm_chat.invoke(prompt)
@@ -529,7 +530,9 @@ def route_prompt(state: GraphState) -> str:
         return "make_sop"
     if state.get("action") == Action.RETRIEVE:
         return "retrive"
-    return "general"
+    if state.get("action") == Action.GENERAL_CHAT:
+        return "general"
+    return ""
 builder = StateGraph(GraphState)
 
 builder.add_node("init",init_node)

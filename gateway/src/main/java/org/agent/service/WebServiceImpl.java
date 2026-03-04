@@ -318,7 +318,7 @@ public class WebServiceImpl implements WebService {
 
         Map<String, Object> result =
                 restTemplate.postForObject(
-                        "http://localhost:8005/sop",
+                        "http://localhost:8006/sop",
                         request,
                         Map.class
                 );

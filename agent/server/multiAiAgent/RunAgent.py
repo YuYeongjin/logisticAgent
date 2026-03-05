@@ -2,7 +2,8 @@ import os
 import json
 import joblib
 from enum import Enum
-from typing import TypedDict, Optional, Dict, Any, List,Literal
+from typing import TypedDict, Optional, Dict, Any, List,Literal,Annotated
+import operator
 from datetime import datetime
 from pathlib import Path
 
@@ -22,7 +23,7 @@ import numpy as np
 from skimage.metrics import structural_similarity as ssim
 
 # ===============================
-# 이미지 관련
+# 이미지 관련 
 # ===============================
 from minio import Minio
 import io
@@ -43,11 +44,33 @@ from agents.SopMultiAgent import sop_agent_app
 from agents.SafeAgent import safety_agent_app
 from agents.ProcessAgent import process_agent_app
 
+# ===============================
+# 이미지 관련
+# ===============================
+from minio import Minio
+import io
+import re
+import numpy as np
+import io
+from PIL import Image
+from skimage.metrics import structural_similarity as ssim
+
+stt_model = WhisperModel(
+    "base",
+    device="cpu",
+    compute_type="int8"
+)
 
 class GlobalState(TypedDict):
-    input: Optional[str]
-    image: Optional[str]
-    audio: Optional[str]
+    # input: Optional[str]
+    input: Annotated[Optional[str], lambda old, new: new]
+    image_path: Optional[str]
+    image_name: Optional[str]
+    image_analysis: Optional[Dict]
+    observation:Dict
+    voice_status: Literal["PENDING", "DONE"]
+    image_status: Literal["PENDING", "DONE"]
+    voice_path: Optional[str]
     process_result: Dict
     safety_result: Dict
     sop_result: Dict
@@ -55,11 +78,24 @@ class GlobalState(TypedDict):
 
 
 SESSION_STORE: Dict[str, Dict] = {}
+
+minio_client = Minio(
+    "localhost:9000",
+    access_key="admin",
+    secret_key="Abcd1234",
+    secure=False
+)
+BUCKET_NAME = "factory-minio"
+
 def build_global_state(state: Dict[str, Any]) -> GlobalState:
     return {
         "input": state.get("input"),    
-        "image": state.get("image_path"),
-        "audio": state.get("voice_path"),
+        "image_path": state.get("image_path"),
+        "image_name": state.get("image_name"),
+        "image_analysis": state.get("image_analysis"),
+        "image_status": state.get("image_status","DONE"),
+        "voice_status": state.get("voice_status", "DONE"),
+        "voice_path": state.get("voice_path"),
         "process_result": {},
         "safety_result": {},
         "sop_result": {},
@@ -73,20 +109,117 @@ def get_state(session_id: str) -> Dict[str, Any]:
             "text_history": [],
             "voice_history": [],
             "image_history": [],
-            "raw_inputs": {},
-            "voice_status": "DONE",
-            "image_status": "DONE"
+            "voice_path": {},
+            "voice_status": "PENDING",
+            "image_status": "PENDING"
         }
     return SESSION_STORE[session_id]
+
+
+def init_node(state: GlobalState) -> GlobalState:
+    print("init node @@")
+    state.setdefault("raw_inputs", {})
+    state.setdefault("missing_fields", [])
+    return state
+
+
+def voice_node(state: GlobalState) -> GlobalState:
+    print("voice_node @@")
+    if not state.get("voice_path"):
+        state["voice_status"] = "DONE"
+        return state
+
+    print("voice @@@@")
+    segments, _ = stt_model.transcribe(
+        state["voice_path"],
+        language="ko"
+    )
+
+    text = " ".join(seg.text for seg in segments)
+    state["voice_history"].append(text)
+    state["raw_inputs"]["voice_text"] = text
+    state["voice_status"] = "DONE"
+
+    return state
+
+import cv2
+from ultralytics import YOLO
+
+model = YOLO("yolov8n.pt")
+
+
+def image_node(state: GlobalState) -> GlobalState:
+
+    print("VISION AGENT START")
+
+    image_path = state.get("image_path")
+
+    if image_path is None:
+        state["image_status"] = "DONE"
+        state["image_analysis"] = None
+        return state
+
+    img = cv2.imread(image_path)
+
+    results = model(img)
+
+    detected_objects = []
+
+    for r in results:
+        for box in r.boxes:
+
+            cls = int(box.cls)
+            label = model.names[cls]
+
+            detected_objects.append(label)
+
+    worker_present = "person" in detected_objects
+
+    machine_present = any(x in detected_objects for x in [
+        "knife", "scissors", "saw"
+    ])
+
+    ppe_status = {
+        "helmet": "helmet" in detected_objects,
+        "gloves": "gloves" in detected_objects
+    }
+
+    if worker_present and machine_present:
+        action = "cutting"
+    else:
+        action = "unknown"
+
+    analysis = {
+        "objects": detected_objects,
+        "worker": worker_present,
+        "machine": machine_present,
+        "action": action,
+        "ppe": ppe_status
+    }
+
+    print("IMAGE ANALYSIS:", analysis)
+    print(f"IMAGE ANALYSIS: {analysis}")
+    state["image_analysis"] = analysis
+    state["image_status"] = "DONE"
+
+    return state
+
+def get_minio_image(name):
+    obj = minio_client.get_object(BUCKET_NAME, name)
+    return np.array(Image.open(io.BytesIO(obj.read())).convert("L").resize((512, 512)))
+
+def process_node(state: GlobalState) -> GlobalState:
+    state["observation"] = {
+        "input": state["input"],
+        "image_analysis": state["image_analysis"],
+        "voice_path": state["voice_path"],
+    }
+    return state
 
 def run_process_agent(state: GlobalState):
     print("run_process_agent")
     result = process_agent_app.invoke({
-        "input_data": {
-            "input": state["input"],
-            "image": state["image"],
-            "audio": state["audio"],
-        }
+        "observation": state["observation"]
     })
     state["process_result"] = result
     return state
@@ -95,12 +228,7 @@ def run_process_agent(state: GlobalState):
 def run_safety_agent(state: GlobalState):
     print("run_safety_agent")
     result = safety_agent_app.invoke({
-         "input_data": {
-            "input": state["input"],
-            "image": state["image"],
-            "audio": state["audio"],
-            "process_result": state["process_result"]
-        }
+        "observation": state["observation"]
     })
     state["safety_result"] = result
     return state
@@ -108,13 +236,7 @@ def run_safety_agent(state: GlobalState):
 def run_sop_agent(state: GlobalState):
     print("run_sop_agent")
     result = sop_agent_app.invoke({
-        "input_data": {
-            "input": state["input"],
-            "image": state["image"],
-            "audio": state["audio"],
-            "process_result": state["process_result"],
-            "safety_result": state["safety_result"],
-        }
+        "observation": state["observation"]
     })
     state["sop_result"] = result
     return state
@@ -122,26 +244,71 @@ def run_sop_agent(state: GlobalState):
 # Graph
 # ===============================
 def orchestrator_decide(state: GlobalState):
-    if state["safety_result"]["recommendation"] == "EMERGENCY_STOP":
-        state["final_decision"] = "STOP_IMMEDIATELY"
-    elif state["process_result"]["recommendation"] == "STOP_PROCESS":
-        state["final_decision"] = "PAUSE_PROCESS"
+    print("@@@@ orchestrator_decide @@@@")
+    safety = state.get("safety_result", {})
+    process = state.get("process_result", {})
+    sop = state.get("sop_result", {})
+
+    score = 0
+
+    if safety.get("risk_level") == "HIGH":
+        score += 100
+
+    if process.get("anomaly"):
+        score += 50
+
+    if sop.get("deviation"):
+        score += 30
+
+    if score >= 100:
+        decision = "STOP_IMMEDIATELY"
+    elif score >= 50:
+        decision = "PAUSE_PROCESS"
+    elif score >= 30:
+        decision = "CHECK_SOP"
     else:
-        state["final_decision"] = "CONTINUE"
+        decision = "CONTINUE"
+
+    state["final_decision"] = decision
+
     return state
+def route_init(state: GlobalState):
+    if state.get("voice_path") and state["voice_status"] == "PENDING":
+        return "voice_node"
+    if state.get("image_path") and state["image_status"] == "PENDING":
+        return "image_node"
+    return "process_node"
 
 builder = StateGraph(GlobalState)
+builder.add_node("init",init_node)
+builder.add_node("voice_node", voice_node)
+builder.add_node("image_node", image_node)
+builder.add_node("process_node", process_node)
 
 builder.add_node("process_agent", run_process_agent)
 builder.add_node("safety_agent", run_safety_agent)
 builder.add_node("sop_agent", run_sop_agent)
 builder.add_node("decide", orchestrator_decide)
 
-builder.set_entry_point("process_agent")
-builder.add_edge("process_agent", "safety_agent")
-builder.add_edge("safety_agent", "sop_agent")
+builder.set_entry_point("init")
+builder.add_edge("process_node", "process_agent")
+builder.add_edge("process_node", "safety_agent")
+builder.add_edge("process_node", "sop_agent")
+builder.add_edge("process_agent", "decide")
+builder.add_edge("safety_agent", "decide")
 builder.add_edge("sop_agent", "decide")
 
+builder.add_conditional_edges(
+    "init",
+    route_init,
+    {
+        "voice_node": "voice_node",
+        "image_node": "image_node",
+        "process_node": "process_node"
+    }
+)
+builder.add_edge("voice_node", "init")
+builder.add_edge("image_node", "init")
 
 graph = builder.compile()
 # ===============================
@@ -164,7 +331,6 @@ async def chat(
     image_name: Optional[str] = Form(None),
     session_id: str = Form(...)
 ):
-    # state: GraphState = {}
     state = get_state(session_id)
     state.setdefault("text_history", [])
     state.setdefault("voice_history", [])

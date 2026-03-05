@@ -42,28 +42,6 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 
-# =========================
-# 앱 / 전역 세션 스토어
-# =========================
-
-# 세션별 상태 저장소
-SESSION_STORE: Dict[str, Dict] = {}
-
-
-def get_state(session_id: str) -> Dict[str, Any]:
-    """ 세션별 상태를 가져오거나 초기화"""
-    if session_id not in SESSION_STORE:
-        SESSION_STORE[session_id] = {
-            "text_history": [],
-            "voice_history": [],
-            "image_history": [],
-            "sop_value": WorkState(), # 초기 빈 공정 객체 생성
-            "raw_inputs": {},
-            "voice_status": "DONE",
-            "image_status": "DONE"
-        }
-    return SESSION_STORE[session_id]
-
 # ===============================
 # Action / State
 # ===============================
@@ -176,60 +154,6 @@ minio_client = Minio(
 BUCKET_NAME = "factory-minio"
 
 
-
-# ===============================
-# Nodes
-# ===============================
-def init_node(state: GraphState) -> GraphState:
-    print("init node @@")
-    state.setdefault("raw_inputs", {})
-    state.setdefault("missing_fields", [])
-    return state
-
-def voice_node(state: GraphState) -> GraphState:
-    print("voice_node @@")
-    if not state.get("voice_path"):
-        state["voice_status"] = "DONE"
-        return state
-
-    print("voice @@@@")
-    segments, _ = stt_model.transcribe(
-        state["voice_path"],
-        language="ko"
-    )
-
-    text = " ".join(seg.text for seg in segments)
-    state["voice_history"].append(text)
-    state["raw_inputs"]["voice_text"] = text
-    state["input"] = text
-    state["voice_status"] = "DONE"
-
-    return state
-
-def image_node(state: GraphState) -> GraphState:
-    print("image_node @@")
-    current_key = state.get("image_path") 
-    print(f"[*] current_key : {current_key}")
-    if not current_key:
-        state["image_status"] = "DONE"
-        return state
-    print("image @@@@")
-    # 2. 파일명에서 카메라 ID 추출 (cam_1, cam_2 등)
-    match = re.match(r"(cam_\d+)", state.get("image_name"))
-    if not match:
-        state["response"] = "잘못된 파일 형식입니다."
-        state["image_status"] = "DONE"
-        return state
-    print("t1")
-    target_cam = match.group(1)
-    
-    state["raw_inputs"]["image_cam"] = target_cam
-    state["image_status"] = "DONE"
-    state["image_history"].append({
-        "name": state.get("image_name"),
-        "cam": target_cam
-    })
-    return state
 
 def get_minio_image(name):
     obj = minio_client.get_object(BUCKET_NAME, name)
@@ -538,9 +462,6 @@ def route_prompt(state: GraphState) -> str:
 def build_sop_agent():
     builder = StateGraph(GraphState)
 
-    builder.add_node("init",init_node)
-    builder.add_node("voice_node", voice_node)
-    builder.add_node("image_node", image_node)
     builder.add_node("analyze_prompt", analyze_prompt)
     builder.add_node("make_sop_node", make_sop_node)
     builder.add_node("check_sop", check_sop)
@@ -549,18 +470,7 @@ def build_sop_agent():
     builder.add_node("general_llm", general_llm)
     builder.add_node("retrieve_node",retrieve_node)
 
-    builder.set_entry_point("init")
-    builder.add_conditional_edges(
-        "init",
-        route_init,
-        {
-            "voice_node": "voice_node",
-            "image_node": "image_node",
-            "process_node": "analyze_prompt"
-        }
-    )
-    builder.add_edge("voice_node", "init")
-    builder.add_edge("image_node", "init")
+    builder.set_entry_point("analyze_prompt")
 
     builder.add_conditional_edges(
         "analyze_prompt",

@@ -9,11 +9,312 @@ import cv2
 from ultralytics import YOLO
 from faster_whisper import WhisperModel
 
+from agents.ProcessAgent import run_process_agent
+from agents.SopMultiAgent import run_sop_agent
+from agents.SafeAgent import run_safety_agent
+from agents.SopGeneratorAgent import run_sop_create_agent
+from langchain_ollama import ChatOllama
+
+
+# ===============================
+# LLM
+# ===============================
+
+llm_chat = ChatOllama(
+    model="llama3.1",
+    temperature=0,
+    format="json",
+    base_url="http://localhost:11434"
+)
+
 # ==============================
 # 모델 초기화
 # ==============================
 
-vision_model = YOLO("yolov8n.pt")
+# ============================
+# 이미지 관련
+# ============================
+import json
+import numpy as np
+# object detection
+detector = YOLO("yolov8m.pt")
+
+# segmentation
+segmentor = YOLO("yolov8m-seg.pt")
+
+# pose detection
+pose_model = YOLO("yolov8m-pose.pt")
+
+# PPE detection
+ppe_model = YOLO("yolov8m.pt") #YOLO("ppe-detection.pt")
+
+def preprocess_image(path):
+
+    img = cv2.imread(path)
+
+    if img is None:
+        raise Exception("image load fail")
+
+    img = cv2.resize(img, (1280, 720))
+
+    return img
+
+def detect_objects(img):
+
+    results = detector(img)
+
+    objects = []
+
+    for r in results:
+
+        for box in r.boxes:
+
+            conf = float(box.conf)
+
+            if conf < 0.4:
+                continue
+
+            cls = int(box.cls)
+            label = detector.names[cls]
+
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+
+            obj = {
+
+                "label": label,
+                "confidence": round(conf, 3),
+                "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                "center": [
+                    int((x1 + x2) / 2),
+                    int((y1 + y2) / 2)
+                ]
+            }
+
+            objects.append(obj)
+
+    return objects
+def detect_ppe(img):
+
+    results = ppe_model(img)
+
+    ppe_items = []
+
+    for r in results:
+
+        for box in r.boxes:
+
+            conf = float(box.conf)
+
+            if conf < 0.4:
+                continue
+
+            cls = int(box.cls)
+            label = ppe_model.names[cls]
+
+            x1,y1,x2,y2 = box.xyxy[0].tolist()
+
+            ppe_items.append({
+
+                "label": label,
+                "confidence": round(conf,3),
+                "bbox":[int(x1),int(y1),int(x2),int(y2)]
+
+            })
+
+    return ppe_items
+def check_ppe_compliance(objects, poses, ppe_items):
+
+    result = {
+
+        "helmet": False,
+        "gloves": False,
+        "vest": False
+
+    }
+
+    if len(poses) == 0:
+        return result
+
+    pose = poses[0]["keypoints"]
+
+    head = pose[0]
+    left_hand = pose[9]
+    right_hand = pose[10]
+
+    for p in ppe_items:
+
+        x1,y1,x2,y2 = p["bbox"]
+
+        cx = (x1+x2)/2
+        cy = (y1+y2)/2
+
+        if p["label"] == "helmet":
+
+            if abs(cx - head[0]) < 100 and abs(cy - head[1]) < 100:
+                result["helmet"] = True
+
+        if p["label"] == "gloves":
+
+            if abs(cx - left_hand[0]) < 120 or abs(cx - right_hand[0]) < 120:
+                result["gloves"] = True
+
+        if p["label"] == "safety_vest":
+
+            result["vest"] = True
+
+    return result
+# ============================
+# Segmentation
+# ============================
+
+def segment_objects(img):
+
+    results = segmentor(img)
+
+    segments = []
+
+    for r in results:
+
+        if r.masks is None:
+            continue
+
+        for i, mask in enumerate(r.masks.xy):
+
+            cls = int(r.boxes.cls[i])
+            label = segmentor.names[cls]
+
+            segments.append({
+
+                "label": label,
+                "polygon": mask.tolist()
+
+            })
+
+    return segments
+
+
+# ============================
+# Pose Detection
+# ============================
+
+def detect_pose(img):
+
+    results = pose_model(img)
+
+    poses = []
+
+    for r in results:
+
+        if r.keypoints is None:
+            continue
+
+        for k in r.keypoints.xy:
+
+            points = k.tolist()
+
+            poses.append({
+
+                "keypoints": points
+
+            })
+
+    return poses
+
+
+# ============================
+# Object Relationship
+# ============================
+
+def analyze_relations(objects):
+
+    relations = []
+
+    for i in range(len(objects)):
+
+        for j in range(i+1, len(objects)):
+
+            o1 = objects[i]
+            o2 = objects[j]
+
+            x1,y1 = o1["center"]
+            x2,y2 = o2["center"]
+
+            dist = np.sqrt((x1-x2)**2 + (y1-y2)**2)
+
+            if dist < 150:
+
+                relations.append({
+
+                    "object1": o1["label"],
+                    "object2": o2["label"],
+                    "distance": int(dist),
+                    "relation": "near"
+
+                })
+
+    return relations
+
+
+# ============================
+# Scene Graph
+# ============================
+
+def build_scene_graph(objects, relations):
+
+    graph = {
+
+        "nodes": objects,
+        "edges": relations
+
+    }
+
+    return graph
+
+
+# ============================
+# LLM Scene Understanding
+# ============================
+
+def scene_reasoning(objects, segments, poses, relations):
+
+    prompt = f"""
+    다음은 이미지 분석 데이터이다.
+
+    objects:
+    {json.dumps(objects, ensure_ascii=False)}
+
+    segmentation:
+    {json.dumps(segments, ensure_ascii=False)}
+
+    human_pose:
+    {json.dumps(poses, ensure_ascii=False)}
+
+    relations:
+    {json.dumps(relations, ensure_ascii=False)}
+
+    이 데이터를 기반으로 장면을 분석하라.
+
+    반드시 JSON 출력
+
+    {{
+        "scene": "",
+        "human_activity": "",
+        "tools": [],
+        "environment": "",
+        "risk": ""
+    }}
+    """
+
+    res = llm_chat.invoke(prompt)
+
+    try:
+        return json.loads(res.content)
+
+    except:
+        return {"scene": "unknown"}
+
+# ============================
+
 
 stt_model = WhisperModel(
     "base",
@@ -39,9 +340,11 @@ class GlobalState(TypedDict):
 
     process_result: Dict
     safety_result: Dict
-    sop_result: Dict
+    sop_validation_result: Dict
+    sop_generation_result: Dict
 
     final_decision: str
+    final_score: str
 
 # ==============================
 # Session Store
@@ -109,49 +412,78 @@ def voice_node(state: GlobalState):
 
 def image_node(state: GlobalState):
 
-    print("VISION NODE")
+    print("VISION PIPELINE START")
 
-    if not state.get("image_path"):
-        return state
+    img = preprocess_image(state["image_path"])
 
-    img = cv2.imread(state["image_path"])
+    # ------------------------
+    # Object Detection
+    # ------------------------
 
-    results = vision_model(img)
+    objects = detect_objects(img)
 
-    detected_objects = []
+    # ------------------------
+    # Segmentation
+    # ------------------------
 
-    for r in results:
+    segments = segment_objects(img)
 
-        for box in r.boxes:
+    # ------------------------
+    # Human Pose
+    # ------------------------
 
-            cls = int(box.cls)
-            label = vision_model.names[cls]
+    poses = detect_pose(img)
 
-            detected_objects.append(label)
+    # ------------------------
+    # PPE Detection
+    # ------------------------
 
-    worker_present = "person" in detected_objects
+    ppe_items = detect_ppe(img)
 
-    machine_present = any(x in detected_objects for x in [
-        "knife", "scissors", "saw"
-    ])
+    # ------------------------
+    # Object Relations
+    # ------------------------
 
-    if worker_present and machine_present:
-        action = "cutting"
-    else:
-        action = "unknown"
+    relations = analyze_relations(objects)
 
-    analysis = {
+    # ------------------------
+    # Scene Graph
+    # ------------------------
 
-        "objects": detected_objects,
-        "worker": worker_present,
-        "machine": machine_present,
-        "action": action
+    graph = build_scene_graph(objects, relations)
+
+    # ------------------------
+    # PPE Compliance
+    # ------------------------
+
+    ppe_status = check_ppe_compliance(objects, poses, ppe_items)
+
+    # ------------------------
+    # Scene Reasoning (LLM)
+    # ------------------------
+
+    scene = scene_reasoning(
+        objects,
+        segments,
+        poses,
+        relations
+    )
+
+    state["image_analysis"] = {
+
+        "objects": objects,
+        "segments": segments,
+        "poses": poses,
+        "ppe_items": ppe_items,
+        "ppe_status": ppe_status,
+        "relations": relations,
+        "scene_graph": graph,
+        "scene": scene
 
     }
 
-    state["image_analysis"] = analysis
-
-    print("IMAGE ANALYSIS:", analysis)
+    print("PPE STATUS:", ppe_status)
+    print("VISION PIPELINE END")
 
     return state
 
@@ -186,22 +518,10 @@ def process_agent(state: GlobalState):
     print("PROCESS AGENT")
 
     obs = state["observation"]
+    result = run_process_agent(obs)
+    print(f"process result :{result}")
 
-    anomaly = False
-
-    if obs["vision"]:
-
-        if obs["vision"]["action"] == "unknown":
-            anomaly = True
-
-    state["process_result"] = {
-
-        "process": obs["vision"]["action"] if obs["vision"] else "unknown",
-        "anomaly": anomaly
-
-    }
-
-    return state
+    return { "process_result": result}
 
 
 def safety_agent(state: GlobalState):
@@ -209,44 +529,26 @@ def safety_agent(state: GlobalState):
     print("SAFETY AGENT")
 
     obs = state["observation"]
+    result = run_safety_agent(obs)
+    print(f"safety result :{result}")
 
-    risk = "LOW"
-
-    if obs["vision"]:
-
-        if obs["vision"]["worker"] and obs["vision"]["machine"]:
-            risk = "MEDIUM"
-
-    state["safety_result"] = {
-
-        "risk_level": risk
-
-    }
-
-    return state
+    return {"safety_result": result}
 
 
 def sop_agent(state: GlobalState):
-
     print("SOP AGENT")
-
     obs = state["observation"]
+    result = run_sop_agent(obs)
+    print(f"sop_validation_result :{result}")
 
-    deviation = False
+    return {"sop_validation_result": result}
 
-    if obs["vision"]:
-
-        if obs["vision"]["action"] == "unknown":
-            deviation = True
-
-    state["sop_result"] = {
-
-        "deviation": deviation
-
-    }
-
-    return state
-
+def sop_generator_agent(state: GlobalState):
+    print("SOP GENERATOR AGENT (New Process Detection)")
+    obs = state["observation"]
+    
+    result = run_sop_create_agent(obs) 
+    return {"sop_generation_result": result}
 # ==============================
 # ORCHESTRATOR
 # ==============================
@@ -257,37 +559,53 @@ def orchestrator(state: GlobalState):
 
     safety = state["safety_result"]
     process = state["process_result"]
-    sop = state["sop_result"]
+    sop = state.get("sop_validation_result") or state.get("sop_generation_result")
+    text = state.get("sop_generation_result")
+
+    print(f"safety : {safety}")
+    print(f"process : {process}")
+    print(f"sop : {sop}")
+
 
     score = 0
 
-    if safety["risk_level"] == "HIGH":
+    if safety and safety["risk_level"] == "HIGH":
         score += 100
 
-    if process["anomaly"]:
+    if process and process["anomaly"]:
         score += 50
 
-    if sop["deviation"]:
+    if sop and sop["deviation"]:
         score += 30
 
     if score >= 100:
-        decision = "STOP_IMMEDIATELY"
+        decision = "danger"
 
     elif score >= 50:
-        decision = "PAUSE_PROCESS"
+        decision = "warn"
 
     elif score >= 30:
-        decision = "CHECK_SOP"
+        decision = "warn"
 
     else:
-        decision = "CONTINUE"
+        decision = "info"
 
-    state["final_decision"] = decision
-
+    if text : 
+        state["final_decision"] = text.get("reason")
+    else:
+        state["final_decision"] = decision
+        
+    state["final_score"] = score
     print("FINAL DECISION:", decision)
 
     return state
-
+def route_after_process(state: GlobalState):
+    if state["process_result"].get("anomaly") == True:
+        # DB에 없는 공정이면 생성 에이전트로 이동
+        return "sop_generator_agent"
+    else:
+        # 있는 공정이면 기존 검증 에이전트로 이동
+        return "sop_agent"
 # ==============================
 # GRAPH
 # ==============================
@@ -304,6 +622,7 @@ builder.add_node("merge", merge_inputs)
 builder.add_node("process_agent", process_agent)
 builder.add_node("safety_agent", safety_agent)
 builder.add_node("sop_agent", sop_agent)
+builder.add_node("sop_generator_agent", sop_generator_agent)
 
 builder.add_node("orchestrator", orchestrator)
 
@@ -316,10 +635,18 @@ builder.add_edge("image", "merge")
 
 builder.add_edge("merge", "process_agent")
 builder.add_edge("merge", "safety_agent")
-builder.add_edge("merge", "sop_agent")
 
-builder.add_edge("process_agent", "orchestrator")
+builder.add_conditional_edges(
+    "process_agent",
+    route_after_process,
+    {
+        "sop_generator_agent": "sop_generator_agent",
+        "sop_agent": "sop_agent"
+    }
+)
+
 builder.add_edge("safety_agent", "orchestrator")
+builder.add_edge("sop_generator_agent", "orchestrator")
 builder.add_edge("sop_agent", "orchestrator")
 
 graph = builder.compile()
@@ -332,7 +659,8 @@ app = FastAPI()
 
 class ChatResponse(BaseModel):
     response: str
-
+    log_level: str
+    diff_score : int
 @app.post("/sop", response_model=ChatResponse)
 
 async def chat(
@@ -368,9 +696,13 @@ async def chat(
             state["image_path"] = tmp.name
 
     result = graph.invoke(state)
+    decision = result.get("final_decision","info")
+    score = result.get("final_score",0)
 
     return ChatResponse(
-        response=result["final_decision"]
+        response=result["final_decision"],
+        log_level=decision,
+        diff_score=score
     )
 
 # ==============================

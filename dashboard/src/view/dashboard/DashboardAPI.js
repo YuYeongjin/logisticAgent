@@ -209,7 +209,10 @@ export default function DashboardAPI() {
 
             try {
                 console.log("image capture")
-                const response = await AxiosCustom.post('/api/capture/image', formData, {
+                const response = await AxiosCustom.post(
+                    // '/api/capture/image'
+                    '/api/sop/chat'
+                    , formData, {
                     headers: { 'Content-Type': 'multipart/form-data' }
                 });
 

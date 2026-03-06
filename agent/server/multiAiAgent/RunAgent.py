@@ -62,18 +62,25 @@ stt_model = WhisperModel(
 )
 
 class GlobalState(TypedDict):
-    # input: Optional[str]
-    input: Annotated[Optional[str], lambda old, new: new]
+
+    input: Optional[str]
+
+    voice_path: Optional[str]
     image_path: Optional[str]
     image_name: Optional[str]
-    image_analysis: Optional[Dict]
-    observation:Dict
+
     voice_status: Literal["PENDING", "DONE"]
     image_status: Literal["PENDING", "DONE"]
-    voice_path: Optional[str]
+
+    voice_text: Optional[str]
+    image_analysis: Optional[Dict]
+
+    observation: Dict
+
     process_result: Dict
     safety_result: Dict
     sop_result: Dict
+
     final_decision: str
 
 
@@ -123,22 +130,25 @@ def init_node(state: GlobalState) -> GlobalState:
     return state
 
 
-def voice_node(state: GlobalState) -> GlobalState:
-    print("voice_node @@")
+def voice_node(state: GlobalState):
+
+    print("VOICE NODE")
+
     if not state.get("voice_path"):
         state["voice_status"] = "DONE"
         return state
 
-    print("voice @@@@")
     segments, _ = stt_model.transcribe(
         state["voice_path"],
         language="ko"
     )
 
     text = " ".join(seg.text for seg in segments)
-    state["voice_history"].append(text)
-    state["raw_inputs"]["voice_text"] = text
+
+    state["voice_text"] = text
     state["voice_status"] = "DONE"
+
+    print("VOICE TEXT:", text)
 
     return state
 
@@ -208,21 +218,22 @@ def get_minio_image(name):
     obj = minio_client.get_object(BUCKET_NAME, name)
     return np.array(Image.open(io.BytesIO(obj.read())).convert("L").resize((512, 512)))
 
-def process_node(state: GlobalState) -> GlobalState:
-    state["observation"] = {
-        "input": state["input"],
-        "image_analysis": state["image_analysis"],
-        "voice_path": state["voice_path"],
+def process_node(state: GlobalState):
+    print("BUILD OBSERVATION")
+    observation = {
+        "text": state.get("input"),
+        "voice": state.get("voice_text"),
+        "vision": state.get("image_analysis")
     }
-    return state
+
+    return {"observation" : observation}
 
 def run_process_agent(state: GlobalState):
     print("run_process_agent")
     result = process_agent_app.invoke({
         "observation": state["observation"]
     })
-    state["process_result"] = result
-    return state
+    return {"process_result": result}
 
 
 def run_safety_agent(state: GlobalState):
@@ -230,16 +241,15 @@ def run_safety_agent(state: GlobalState):
     result = safety_agent_app.invoke({
         "observation": state["observation"]
     })
-    state["safety_result"] = result
-    return state
+    return {"safety_result": result}
+
 
 def run_sop_agent(state: GlobalState):
     print("run_sop_agent")
     result = sop_agent_app.invoke({
         "observation": state["observation"]
     })
-    state["sop_result"] = result
-    return state
+    return {"sop_result": result}
 # ===============================
 # Graph
 # ===============================

@@ -286,7 +286,9 @@ public class WebServiceImpl implements WebService {
     ) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
-
+        ZonedDateTime zonedDateTime = ZonedDateTime.now(ZoneId.of("Asia/Seoul"));
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH:mm:ss");
+        String formattedDateTimeKOR = zonedDateTime.format(formatter);
         Map<String, Object> sopState =
                 (Map<String, Object>) session.getAttribute("SOP_STATE");
 
@@ -325,6 +327,18 @@ public class WebServiceImpl implements WebService {
 
 //        sopState.putAll(result);
 //        session.setAttribute("SOP_STATE", sopState);
+        System.out.println("result :: " + result);
+        if(result != null){
+            switch (result.get("log_level").toString()){
+                case "warn":
+                case "danger" :
+                    sensorDAO.insertLog(result.get("log_level").toString(), Double.parseDouble( result.get("diff_score").toString()),result.get("response").toString(),"imageCheck");
+                    result.put("time",formattedDateTimeKOR);
+                    simpMessagingTemplate.convertAndSend("/topic/logs", result);
+                    break;
+            }
+
+        }
         return result;
     }
 

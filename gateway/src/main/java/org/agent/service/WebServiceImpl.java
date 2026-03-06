@@ -332,6 +332,7 @@ public class WebServiceImpl implements WebService {
             switch (result.get("log_level").toString()){
                 case "warn":
                 case "danger" :
+                case "notice" :
                     sensorDAO.insertLog(result.get("log_level").toString(), Double.parseDouble( result.get("diff_score").toString()),result.get("response").toString(),"imageCheck");
                     result.put("time",formattedDateTimeKOR);
                     simpMessagingTemplate.convertAndSend("/topic/logs", result);

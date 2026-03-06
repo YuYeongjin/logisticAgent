@@ -697,11 +697,19 @@ async def chat(
 
     result = graph.invoke(state)
     decision = result.get("final_decision","info")
+    if decision == 'danger':
+        level = 'danger'
+    elif decision == 'warn':
+        level = 'warn'
+    elif decision == 'info':
+        level = 'info'
+    else :
+        level = 'notice'
     score = result.get("final_score",0)
 
     return ChatResponse(
         response=result["final_decision"],
-        log_level=decision,
+        log_level=level,
         diff_score=score
     )
 

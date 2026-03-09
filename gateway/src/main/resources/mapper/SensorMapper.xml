@@ -18,7 +18,6 @@
             COALESCE(AVG(humidity), 0)    AS humidity
         FROM SENSOR_DATA
         WHERE location = #{location}
-            /* PostgreSQL은 백틱 대신 큰따옴표를 쓰거나 생략합니다 */
           AND timestamp >= #{start_time}
     </select>
     <insert id="insertLog">
@@ -27,4 +26,46 @@
         VALUES
         (#{logLevel},#{diffScore},#{message},#{source})
     </insert>
+    <select id="getSensorTemperature" >
+        SELECT * FROM sensor_criteria
+        where  sensor_type = 'Temperature'
+        ORDER BY updated_at DESC
+        LIMIT 1
+    </select>
+    <select id="getSensorHumidity" >
+        SELECT * FROM sensor_criteria
+        where  sensor_type = 'Humidity'
+        ORDER BY updated_at DESC
+        LIMIT 1
+    </select>
+
+    <update id="updateMinTemperature">
+        UPDATE sensor_criteria
+        SET min_temperature = #{temperature},
+            updated_by = 'dashboard'
+        WHERE sensor_type = 'Temperature'
+          AND location = #{location}
+    </update>
+    <update id="updateMaxTemperature" >
+        UPDATE sensor_criteria
+        SET max_temperature = #{temperature},
+            updated_by ='dashboard'
+        where  sensor_type = 'Temperature'
+          AND location = #{location}
+
+    </update>
+    <update id="updateMinHumidity" >
+        UPDATE sensor_criteria
+        SET min_humidity = #{humidity},
+            updated_by ='dashboard'
+        where  sensor_type = 'Humidity'
+          AND location = #{location}
+    </update>
+    <update id="updateMaxHumidity" >
+        UPDATE sensor_criteria
+        SET max_humidity = #{humidity},
+            updated_by ='dashboard'
+        where  sensor_type = 'Humidity'
+          AND location = #{location}
+    </update>
 </mapper>

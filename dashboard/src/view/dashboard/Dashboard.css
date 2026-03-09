@@ -1,0 +1,102 @@
+.sensor-card{
+ background:#1e1e2d;
+ padding:24px;
+ border-radius:12px;
+ border:1px solid #2e2e40;
+}
+
+.sensor-header{
+ display:flex;
+ justify-content:space-between;
+ align-items:center;
+ margin-bottom:20px;
+}
+
+.sensor-values{
+ display:flex;
+ gap:30px;
+ font-weight:bold;
+}
+
+.temp{
+ color:#fb923c;
+}
+
+.hum{
+ color:#60a5fa;
+}
+
+.danger{
+ color:#f44336;
+}
+
+.control-row{
+ display:grid;
+ grid-template-columns:1fr 1fr;
+ gap:30px;
+}
+
+.control-box{
+ background:#141420;
+ padding:16px;
+ border-radius:10px;
+}
+
+.label{
+ display:flex;
+ justify-content:space-between;
+ font-size:13px;
+ color:#aaa;
+ margin-bottom:10px;
+}
+
+.slider-row input{
+ width:100%;
+}
+
+/* 기본 공통 스타일 초기화 */
+input[type="range"] {
+    -webkit-appearance: none;
+    width: 100%;
+    height: 6px;
+    background: #2e2e40;
+    border-radius: 5px;
+    outline: none;
+    margin: 10px 0;
+}
+
+/* 슬라이더 손잡이(Thumb) 공통 스타일 */
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid #141420;
+    transition: transform 0.2s ease;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
+}
+
+/* --- 온도 전용 스타일 (Orange) --- */
+.temp-slider input[type="range"]::-webkit-slider-thumb {
+    background: #fb923c;
+    box-shadow: 0 0 10px rgba(251, 146, 60, 0.5);
+}
+
+.temp-slider input[type="range"]:active {
+    background: #4d2d1a; /* 조절 시 배경색 살짝 강조 */
+}
+
+/* --- 습도 전용 스타일 (Blue) --- */
+.hum-slider input[type="range"]::-webkit-slider-thumb {
+    background: #60a5fa;
+    box-shadow: 0 0 10px rgba(96, 165, 250, 0.5);
+}
+
+.hum-slider input[type="range"]:active {
+    background: #1a2a4d;
+}

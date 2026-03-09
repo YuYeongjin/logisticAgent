@@ -3,6 +3,7 @@ import SockJS from "sockjs-client";
 import { Client } from "@stomp/stompjs";
 import AxiosCustom from "../../config/AxiosCustom";
 import SpeechRecognition, { useSpeechRecognition } from 'react-speech-recognition';
+import axios from "axios";
 
 export default function DashboardAPI() {
     const [messages, setMessages] = useState([]);
@@ -21,6 +22,18 @@ export default function DashboardAPI() {
     const [imageList, setImageList] = useState([]);
     const [currentDate, setCurrentDate] = useState(new Date().toLocaleDateString());
     const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString());
+
+    //온습도
+    const [tempMin, setTempMin] = useState(0)
+    const [tempMax, setTempMax] = useState(60)
+
+    const [humMin, setHumMin] = useState(20)
+    const [humMax, setHumMax] = useState(80)
+
+
+    const [isTempAlarm, setIsTempAlarm] = useState(false)
+    const [isHumAlarm, setIsHumAlarm] = useState(false)
+
     useEffect(() => {
         const timer = setInterval(() => {
             setCurrentDate(new Date().toLocaleDateString());
@@ -100,6 +113,58 @@ export default function DashboardAPI() {
             return next.length > 30 ? next.slice(-30) : next;
         });
     }, [latest]);
+
+    useEffect(() => {
+        AxiosCustom.post('/api/get/temperature', {
+            location: 'bridgeA'
+        })
+            .then((response) => {
+                const data = response.data.result
+                if (data) {
+                    setTempMin(data.min_temperature)
+                    setTempMax(data.max_temperature)
+                }
+            })
+        AxiosCustom.post('/api/get/humidity', {
+            location: 'bridgeA'
+        })
+            .then((response) => {
+                const data = response.data.result
+                if (data) {
+                    setHumMin(data.min_humidity)
+                    setHumMax(data.max_humidity)
+                }
+            })
+    }, [])
+    // 온습도 알림 조정
+    useEffect(() => {
+
+        if (!latest) return
+
+        const temp = latest.temperature
+        const hum = latest.humidity
+
+        AxiosCustom.post('/api/update/sensor', {
+            location: 'bridgeA',
+            tempMin: tempMin,
+            tempMax: tempMax,
+            humMin: humMin,
+            humMax: humMax,
+        })
+
+        if (temp < tempMin || temp > tempMax) {
+            setIsTempAlarm(true)
+        } else {
+            setIsTempAlarm(false)
+        }
+
+        if (hum < humMin || hum > humMax) {
+            setIsHumAlarm(true)
+        } else {
+            setIsHumAlarm(false)
+        }
+
+    }, [tempMin, tempMax, humMin, humMax])
 
 
     useEffect(() => {
@@ -321,5 +386,11 @@ export default function DashboardAPI() {
         currentTime,
         videoRefs,
         cameras,
+        tempMin, setTempMin,
+        tempMax, setTempMax,
+        humMin, setHumMax,
+        humMax, setHumMin,
+        isTempAlarm,
+        isHumAlarm
     };
 }

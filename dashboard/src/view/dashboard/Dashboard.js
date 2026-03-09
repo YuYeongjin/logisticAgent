@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import DashboardAPI from "./DashboardAPI";
 import TelemetryGraph from "./graph/Graph";
-
+import './Dashboard.css';
 /* =======================
    Constants & Styles
 ======================= */
@@ -36,30 +36,25 @@ const WebCam = ({ name, status, color, videoRef }) => {
 ======================= */
 export default function Dashboard() {
     const {
-        videoRef,
-        getCameraStream,
         isAutoCapturing,
         setIsAutoCapturing,
         captureInterval,
         setCaptureInterval,
         captureAndSend,
-        sensorData,
         latestSensor,
         envData,
         logData,
         imageList,
         currentTime,
         videoRefs,
-        cameras
+        cameras,
+        tempMin, setTempMin,
+        tempMax, setTempMax,
+        humMin, setHumMax,
+        humMax, setHumMin,
+        isTempAlarm,
+        isHumAlarm
     } = DashboardAPI();
-
-    // Dashboard 컴포넌트 내부
-    const [tempThreshold, setTempThreshold] = useState(30); // 기본 온도 임계치 30도
-    const [humThreshold, setHumThreshold] = useState(70);  // 기본 습도 임계치 70%
-
-    // 경고 여부 판단
-    const isTempAlarm = latestSensor?.temperature > tempThreshold;
-    const isHumAlarm = latestSensor?.humidity > humThreshold;
 
     return (
         <div style={{ background: "#0f0f12", minHeight: "100vh", color: "#fff", padding: "40px" }}>
@@ -139,8 +134,8 @@ export default function Dashboard() {
                             <div style={{
                                 background: "#1e1e2d",
                                 borderRadius: "12px",
-                                padding: "20px",
-                                maxHeight: "27vh", // 위 섹션과 균형을 맞춰 고정
+                                // padding: "20px",/
+                                minHeight: "27vh", // 위 섹션과 균형을 맞춰 고정
                                 border: "1px solid #333",
                                 overflowY: 'auto'
                             }}>
@@ -158,7 +153,7 @@ export default function Dashboard() {
                                                     fontSize: "10px", padding: "4px", textAlign: "center",
                                                     display: "flex", justifyContent: "space-between"
                                                 }}>
-                                                    <span>{img.name && (img.name).substring(0,5)}</span>
+                                                    <span>{img.name && (img.name).substring(0, 5)}</span>
                                                     <span>{img.time}</span>
                                                 </div>
                                             </div>
@@ -168,72 +163,76 @@ export default function Dashboard() {
                             </div>
                         </div>
                     </div>
-                    <div style={{ background: "#1e1e2d", padding: "20px", borderRadius: "12px", marginBottom: "20px", border: "1px solid #333" }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                            <h3 style={{ display: "flex", alignItems: "center", gap: "8px", margin: 0 }}>
-                                <span style={{
-                                    width: "10px",
-                                    height: "10px",
-                                    background: (isTempAlarm || isHumAlarm) ? "#f44336" : "#4caf50",
-                                    borderRadius: "50%",
-                                    boxShadow: (isTempAlarm || isHumAlarm) ? "0 0 10px #f44336" : "none"
-                                }}></span>
-                                REAL-TIME SENSOR TELEMETRY (2s Update)
-                            </h3>
+                    <div className="sensor-card">
 
-                            <div style={{ display: "flex", gap: 30 }}>
-                                {/* 온도 디스플레이 */}
-                                <div style={{
-                                    color: isTempAlarm ? "#f44336" : "#fb923c",
-                                    fontWeight: "bold",
-                                    transition: "all 0.3s"
-                                }}>
-                                    ● 온도: {latestSensor?.temperature?.toFixed(1) ?? "-"} °C
-                                    {isTempAlarm && <span style={{ fontSize: '11px', marginLeft: '5px' }}>[위험]</span>}
+                        <div className="sensor-header">
+                            <h3>REAL-TIME SENSOR TELEMETRY</h3>
+
+                            <div className="sensor-values">
+                                <div className={isTempAlarm ? "danger" : "temp"}>
+                                    온도 {latestSensor?.temperature?.toFixed(1)} °C
                                 </div>
-                                {/* 습도 디스플레이 */}
-                                <div style={{
-                                    color: isHumAlarm ? "#f44336" : "#60a5fa",
-                                    fontWeight: "bold",
-                                    transition: "all 0.3s"
-                                }}>
-                                    ● 습도: {latestSensor?.humidity?.toFixed(1) ?? "-"} %
-                                    {isHumAlarm && <span style={{ fontSize: '11px', marginLeft: '5px' }}>[위험]</span>}
+
+                                <div className={isHumAlarm ? "danger" : "hum"}>
+                                    습도 {latestSensor?.humidity?.toFixed(1)} %
                                 </div>
                             </div>
                         </div>
 
-                        {/* 임계치 설정 Bar 섹션 */}
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "30px", padding: "15px", background: "rgba(0,0,0,0.2)", borderRadius: "8px" }}>
-                            {/* 온도 설정 */}
-                            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "#888" }}>
-                                    <span>온도 경고 설정</span>
-                                    <span style={{ color: "#fb923c", fontWeight: "bold" }}>{tempThreshold}°C</span>
+                        <div className="control-row">
+
+                            {/* 온도 */}
+                            <div className="control-box temp-slider">
+                                <div className="label">
+                                    온도 기준
+                                    <span>{tempMin}°C ~ {tempMax}°C</span>
                                 </div>
-                                <input
-                                    type="range"
-                                    min="0" max="100"
-                                    value={tempThreshold}
-                                    onChange={(e) => setTempThreshold(Number(e.target.value))}
-                                    style={{ cursor: "pointer", accentColor: "#fb923c" }}
-                                />
+
+                                <div className="slider-row">
+                                    <input                           
+                                        type="range"
+                                        min="0"
+                                        max="50"
+                                        value={tempMin}
+                                        onChange={(e) => setTempMin(Number(e.target.value))}
+                                    />
+
+                                    <input
+                                        type="range"
+                                        min="0"
+                                        max="50"
+                                        value={tempMax}
+                                        onChange={(e) => setTempMax(Number(e.target.value))}
+                                    />
+                                </div>
                             </div>
 
-                            {/* 습도 설정 */}
-                            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "#888" }}>
-                                    <span>습도 경고 설정</span>
-                                    <span style={{ color: "#60a5fa", fontWeight: "bold" }}>{humThreshold}%</span>
+                            {/* 습도 */}
+                            <div className="control-box">
+                                <div className="label">
+                                    습도 기준
+                                    <span>{humMin}% ~ {humMax}%</span>
                                 </div>
-                                <input
-                                    type="range"
-                                    min="0" max="100"
-                                    value={humThreshold}
-                                    onChange={(e) => setHumThreshold(Number(e.target.value))}
-                                    style={{ cursor: "pointer", accentColor: "#60a5fa" }}
-                                />
+
+                                <div className="slider-row hum-slider">
+                                    <input
+                                        type="range"
+                                        min="0"
+                                        max="100"
+                                        value={humMin}
+                                        onChange={(e) => setHumMin(Number(e.target.value))}
+                                    />
+
+                                    <input
+                                        type="range"
+                                        min="0"
+                                        max="100"
+                                        value={humMax}
+                                        onChange={(e) => setHumMax(Number(e.target.value))}
+                                    />
+                                </div>
                             </div>
+
                         </div>
                     </div>
 

@@ -82,4 +82,16 @@ public class WebController {
     public ResponseEntity<?> captureOneDay(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(webService.getOneDayImage(request));
     }
+    @PostMapping("/get/temperature")
+    public ResponseEntity<?> getTemperature(@RequestBody Map<String, String> request) {
+        return ResponseEntity.ok(webService.getTemperature(request));
+    }
+    @PostMapping("/get/humidity")
+    public ResponseEntity<?> getHumidity(@RequestBody Map<String, String> request) {
+        return ResponseEntity.ok(webService.getHumidity(request));
+    }
+    @PostMapping("/update/sensor")
+    public ResponseEntity<?> updateSensor(@RequestBody Map<String, String> request) {
+        return ResponseEntity.ok(webService.updateSensorCriteria(request));
+    }
 }

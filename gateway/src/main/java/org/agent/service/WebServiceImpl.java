@@ -343,6 +343,27 @@ public class WebServiceImpl implements WebService {
         return result;
     }
 
+    @Override
+    public Map<String, Object> getTemperature(Map<String, String> request) {
+        return Map.of("result",sensorDAO.getSensorTemperature());
+    }
+
+    @Override
+    public Map<String, Object> getHumidity(Map<String, String> request) {
+        return Map.of("result",sensorDAO.getSensorHumidity());
+    }
+
+    @Override
+    public Map<String, Object> updateSensorCriteria(Map<String, String> request) {
+        List<Boolean> check = new ArrayList<>();
+        check.add( sensorDAO.updateMinTemperature(request.get("location"), Integer.valueOf(request.get("tempMin"))));
+        check.add( sensorDAO.updateMaxTemperature(request.get("location"), Integer.valueOf(request.get("tempMax"))));
+        check.add( sensorDAO.updateMinHumidity(request.get("location"), Integer.valueOf(request.get("humMin"))));
+        check.add( sensorDAO.updateMaxHumidity(request.get("location"), Integer.valueOf(request.get("humMax"))));
+
+        return Map.of("result",!check.contains(false));
+    }
+
     private Map<String, Object> processCsv(MultipartFile file) {
         Map<String, Object> result = new HashMap<>();
         Map<String,Object> reqLLM = new HashMap<>();

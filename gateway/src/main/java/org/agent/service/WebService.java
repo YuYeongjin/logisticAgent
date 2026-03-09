@@ -22,4 +22,10 @@ public interface WebService {
     Map<String, Object> getOneDayImage(Map<String, String> request);
 
     Map<String, Object> chatSop(MultipartFile voiceFile, MultipartFile imageFile, String input, HttpSession session);
+
+    Map<String, Object> getTemperature(Map<String, String> request);
+
+    Map<String, Object> getHumidity(Map<String, String> request);
+
+    Map<String, Object> updateSensorCriteria(Map<String, String> request);
 }

@@ -505,7 +505,7 @@ def merge_inputs(state: GlobalState):
 
     state["observation"] = observation
 
-    print("OBSERVATION:", observation)
+    # print("OBSERVATION:", observation)
 
     return state
 

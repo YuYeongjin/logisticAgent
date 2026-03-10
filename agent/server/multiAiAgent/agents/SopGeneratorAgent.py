@@ -1,16 +1,30 @@
 import json
-from typing import TypedDict, Dict, Optional
+from typing import TypedDict, Dict, Optional, List
+
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from langchain_ollama import ChatOllama
 
-# 기존 설정 그대로 유지
+from langchain_ollama import ChatOllama
+from sentence_transformers import SentenceTransformer
+
+
+# -----------------------------
+# LLM
+# -----------------------------
+
 llm_json = ChatOllama(
     model="llama3.1",
     temperature=0,
     format="json",
     base_url="http://localhost:11434"
 )
+
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+
+# -----------------------------
+# DB CONFIG
+# -----------------------------
 
 DB_CONFIG = {
     "host": "localhost",
@@ -20,35 +34,63 @@ DB_CONFIG = {
     "port": "5432"
 }
 
+
 def get_db_connection():
     return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
+
+
+# -----------------------------
+# STATE
+# -----------------------------
 
 class SopState(TypedDict):
     observation: Dict
     db_process: Optional[Dict]
+    generated_sop: Optional[Dict]
     deviation: bool
     result: Dict
 
+
+# -----------------------------
+# 2️⃣ 기존 SOP 조회
+# -----------------------------
+
 def sop_db_retrieve(state: SopState):
-    print(f"SopState :: {SopState}" )
-    # ProcessAgent의 DB 조회 방식 그대로 적용
+
     obs = state["observation"]
-    
-    # 에러 방어: vision이 None이면 빈 딕셔너리로 취급
+
     vision_data = obs.get("vision") or {}
-    voice_data = obs.get("voice") or "설명 없음"
-    text_data = obs.get("text") or ""
-    db_sop = state["db_process"]
+
     process_name = vision_data.get("action", "")
-    
+
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM tbl_sop WHERE name = %s LIMIT 1", (process_name,))
+
+    cur.execute(
+        """
+        SELECT s.*, p.name as process_name
+        FROM tbl_sop s
+        JOIN tbl_process p
+        ON s.process_id = p.id
+        WHERE p.name = %s
+        LIMIT 1
+        """,
+        (process_name,)
+    )
+
     state["db_process"] = cur.fetchone()
+
     cur.close()
     conn.close()
+
     return state
-def sop_llm_analysis(state: SopState):
+
+
+# -----------------------------
+# 3️⃣ SOP 생성 LLM
+# -----------------------------
+
+def sop_llm_generate(state: SopState):
 
     obs = state["observation"]
 
@@ -74,40 +116,30 @@ def sop_llm_analysis(state: SopState):
         "text": text
     }
 
-    # JSON schema (f-string 오류 방지)
     schema = {
         "process_detected": True,
+        "deviation":True,
         "process_name": "",
         "description": "",
         "steps": [
             {
                 "step": 1,
                 "task": "",
-                "action": ""
+                "action": "",
+                "tool": "",
+                "object": "",
+                "safety": ""
             }
         ],
-        "safety": {
-            "helmet": True,
-            "gloves": True,
-            "vest": True,
-            "issue": ""
-        },
-        "reason": ""
+        "reason": "",
     }
 
     prompt = f"""
-당신은 스마트팩토리 공정 분석 AI입니다.
+당신은 스마트팩토리 SOP 생성 AI입니다.
 
-작업자의 행동과 환경을 분석하여 공정(SOP)을 판단하십시오.
+작업자의 행동을 분석하여 SOP를 생성하십시오.
 
-### 분석 규칙
-
-1. 실제 작업 행동이 있을 때만 공정 생성
-2. 단순 이동, 대기, 걷기는 공정이 아님
-3. 제조 작업일 때만 SOP 생성
-4. PPE 미착용은 safety.issue에 기록
-
-### Vision / Sensor Observation
+### Observation
 
 {json.dumps(observation_data, indent=2, ensure_ascii=False)}
 
@@ -120,28 +152,146 @@ def sop_llm_analysis(state: SopState):
 
     try:
         data = json.loads(res.content)
-    except Exception as e:
-        print("LLM JSON parse error:", e)
+    except:
         data = {"process_detected": False}
 
-    state["result"] = {
-        "deviation": False,
-        "reason": data.get("reason", "")
-    }
+    state["generated_sop"] = data
+    state["deviation"] = True
+    return state
+
+
+# -----------------------------
+# 4️⃣ SOP 저장
+# -----------------------------
+
+def save_sop_to_db(state: SopState):
+
+    sop = state["generated_sop"]
+
+    process_name = sop["process_name"]
+    description = sop["description"]
+
+    steps = sop["steps"]
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    # process 저장
+    cur.execute(
+        """
+        INSERT INTO tbl_process (name)
+        VALUES (%s)
+        ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+        RETURNING id
+        """,
+        (process_name,)
+    )
+
+    process_id = cur.fetchone()["id"]
+
+    # sop 저장
+    cur.execute(
+        """
+        INSERT INTO tbl_sop
+        (process_id, name, description, is_completed)
+        VALUES (%s, %s, %s, TRUE)
+        RETURNING id
+        """,
+        (
+            process_id,
+            process_name,
+            description
+        )
+    )
+
+    sop_id = cur.fetchone()["id"]
+
+    # step 저장
+    for step in steps:
+
+        cur.execute(
+            """
+            INSERT INTO tbl_sop_step
+            (sop_id, step_order, step_name, action, expected_tool, expected_object, safety_check)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)
+            RETURNING id
+            """,
+            (
+                sop_id,
+                step["step"],
+                step["task"],
+                step["action"],
+                step["tool"],
+                step["object"],
+                step["safety"]
+            )
+        )
+
+        step_id = cur.fetchone()["id"]
+
+        content = f"""
+        Step {step["step"]}
+        Task: {step["task"]}
+        Action: {step["action"]}
+        Tool: {step["tool"]}
+        Object: {step["object"]}
+        Safety: {step["safety"]}
+        """
+
+        embedding = embedding_model.encode(content).tolist()
+
+        cur.execute(
+            """
+            INSERT INTO tbl_sop_vector
+            (sop_id, step_id, content, embedding)
+            VALUES (%s,%s,%s,%s)
+            """,
+            (
+                sop_id,
+                step_id,
+                content,
+                embedding
+            )
+        )
+
+    conn.commit()
+
+    cur.close()
+    conn.close()
 
     return state
 
+
+# -----------------------------
+# Runner
+# -----------------------------
+
 def run_sop_create_agent(observation: Dict):
-    print(f"SopCreateState" )
-    # Main Runner: 에러가 났던 함수 이름을 피하고 구조는 유지
+
     state: SopState = {
         "observation": observation,
+        "observation_id": None,
         "db_process": None,
+        "generated_sop": None,
         "deviation": False,
         "result": {}
     }
-    
+
+    # 2 기존 sop 조회
     state = sop_db_retrieve(state)
-    state = sop_llm_analysis(state)
-    
-    return state["result"]
+
+    # 3 sop 생성
+    state = sop_llm_generate(state)
+
+    return state["generated_sop"]
+
+
+# -----------------------------
+# 사용자가 승인할 때
+# -----------------------------
+
+def approve_and_save_sop(state: SopState):
+
+    state = save_sop_to_db(state)
+
+    return {"status": "saved"}

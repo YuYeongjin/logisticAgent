@@ -9,7 +9,7 @@ class SafetyState(TypedDict):
 
 def safety_check_logic(state: SafetyState):
     obs = state["observation"]
-    print(f"SAFETY LOGIC CHECK : {obs}")
+    print(f"SAFETY LOGIC CHECK")
     if obs.get("voice") == None and obs.get("vision") == None:
         state["risk_level"] = "LOW"
         state["anomaly"] = False

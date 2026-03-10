@@ -13,6 +13,7 @@ from agents.ProcessAgent import run_process_agent
 from agents.SopMultiAgent import run_sop_agent
 from agents.SafeAgent import run_safety_agent
 from agents.SopGeneratorAgent import run_sop_create_agent
+from agents.SopQuestionAgent import generate_sop_questions
 from langchain_ollama import ChatOllama
 
 
@@ -325,7 +326,6 @@ stt_model = WhisperModel(
 # ==============================
 # Global State
 # ==============================
-
 class GlobalState(TypedDict):
 
     input: Optional[str]
@@ -342,10 +342,15 @@ class GlobalState(TypedDict):
     safety_result: Dict
     sop_validation_result: Dict
     sop_generation_result: Dict
+    
+
+    sop_questions: Optional[list]      # 질문 리스트
+    current_question_index: int        # 현재 몇 번째 질문인지
+    user_answers: Dict[str, str]       # 사용자의 답변들
+    is_completed: bool                 # 대화 종료 여부
 
     final_decision: str
     final_score: str
-
 # ==============================
 # Session Store
 # ==============================
@@ -359,7 +364,25 @@ def get_state(session_id: str):
         SESSION_STORE[session_id] = {
             "input": None,
             "voice_path": None,
-            "image_path": None
+            "image_path": None,
+
+            "voice_text": None,
+            "image_analysis": None,
+
+            "observation": {},
+
+            "process_result": {},
+            "safety_result": {},
+            "sop_validation_result": {},
+            "sop_generation_result": {},
+
+            "sop_questions": None,
+            "user_answers": {},
+            "current_question_index":0,
+            "is_completed": False,
+
+            "final_decision": None,
+            "final_score": 0
         }
 
     return SESSION_STORE[session_id]
@@ -370,16 +393,18 @@ def get_state(session_id: str):
 
 def init_node(state: GlobalState):
 
-    print("INIT NODE")
-
     state.setdefault("voice_text", None)
     state.setdefault("image_analysis", None)
     state.setdefault("observation", {})
-
     state.setdefault("process_result", {})
     state.setdefault("safety_result", {})
-    state.setdefault("sop_result", {})
-
+    state.setdefault("sop_validation_result", {})
+    state.setdefault("sop_generation_result", {})
+    # 질문 관련 초기화 (기존 데이터 유지 위해 setdefault)
+    state.setdefault("sop_questions", None)
+    state.setdefault("current_question_index", 0)
+    state.setdefault("user_answers", {})
+    state.setdefault("is_completed", False)
     return state
 
 # ==============================
@@ -388,7 +413,7 @@ def init_node(state: GlobalState):
 
 def voice_node(state: GlobalState):
 
-    print("VOICE NODE")
+    # print("VOICE NODE")
 
     if not state.get("voice_path"):
         return state
@@ -402,7 +427,7 @@ def voice_node(state: GlobalState):
 
     state["voice_text"] = text
 
-    print("STT RESULT:", text)
+    # print("STT RESULT:", text)
 
     return state
 
@@ -412,65 +437,24 @@ def voice_node(state: GlobalState):
 
 def image_node(state: GlobalState):
 
-    print("VISION PIPELINE START")
-
+    # print("VISION PIPELINE START")
+    if not state.get("image_path"):
+        return state
     img = preprocess_image(state["image_path"])
-
-    # ------------------------
-    # Object Detection
-    # ------------------------
-
     objects = detect_objects(img)
-
-    # ------------------------
-    # Segmentation
-    # ------------------------
-
     segments = segment_objects(img)
-
-    # ------------------------
-    # Human Pose
-    # ------------------------
-
     poses = detect_pose(img)
-
-    # ------------------------
-    # PPE Detection
-    # ------------------------
-
     ppe_items = detect_ppe(img)
-
-    # ------------------------
-    # Object Relations
-    # ------------------------
-
     relations = analyze_relations(objects)
-
-    # ------------------------
-    # Scene Graph
-    # ------------------------
-
     graph = build_scene_graph(objects, relations)
-
-    # ------------------------
-    # PPE Compliance
-    # ------------------------
-
     ppe_status = check_ppe_compliance(objects, poses, ppe_items)
-
-    # ------------------------
-    # Scene Reasoning (LLM)
-    # ------------------------
-
     scene = scene_reasoning(
         objects,
         segments,
         poses,
         relations
     )
-
     state["image_analysis"] = {
-
         "objects": objects,
         "segments": segments,
         "poses": poses,
@@ -479,12 +463,7 @@ def image_node(state: GlobalState):
         "relations": relations,
         "scene_graph": graph,
         "scene": scene
-
     }
-
-    print("PPE STATUS:", ppe_status)
-    print("VISION PIPELINE END")
-
     return state
 
 # ==============================
@@ -493,7 +472,7 @@ def image_node(state: GlobalState):
 
 def merge_inputs(state: GlobalState):
 
-    print("MERGE INPUT NODE")
+    # print("MERGE INPUT NODE")
 
     observation = {
 
@@ -506,6 +485,11 @@ def merge_inputs(state: GlobalState):
     state["observation"] = observation
 
     # print("OBSERVATION:", observation)
+    if state.get("input"):
+        state["conversation_history"].append({
+            "role": "user",
+            "content": state["input"]
+        })
 
     return state
 
@@ -515,36 +499,40 @@ def merge_inputs(state: GlobalState):
 
 def process_agent(state: GlobalState):
 
-    print("PROCESS AGENT")
-
+    # print("PROCESS AGENT")
+    if state.get("sop_questions"):
+        return {}
     obs = state["observation"]
     result = run_process_agent(obs)
-    print(f"process result :{result}")
+    # print(f"process result :{result}")
 
     return { "process_result": result}
 
 
 def safety_agent(state: GlobalState):
 
-    print("SAFETY AGENT")
-
+    # print("SAFETY AGENT")
+    if state.get("sop_questions"):
+        return {}
     obs = state["observation"]
     result = run_safety_agent(obs)
-    print(f"safety result :{result}")
+    # print(f"safety result :{result}")
 
     return {"safety_result": result}
 
 
 def sop_agent(state: GlobalState):
-    print("SOP AGENT")
+    # print("SOP AGENT")
     obs = state["observation"]
     result = run_sop_agent(obs)
-    print(f"sop_validation_result :{result}")
+    # print(f"sop_validation_result :{result}")
 
     return {"sop_validation_result": result}
 
 def sop_generator_agent(state: GlobalState):
-    print("SOP GENERATOR AGENT (New Process Detection)")
+    if state.get("sop_questions"):
+        return {}
+    # print("SOP GENERATOR AGENT (New Process Detection)")
     obs = state["observation"]
     
     result = run_sop_create_agent(obs) 
@@ -552,53 +540,78 @@ def sop_generator_agent(state: GlobalState):
 # ==============================
 # ORCHESTRATOR
 # ==============================
+def sop_question_agent(state: GlobalState):
+
+    if state.get("sop_questions") is None:
+        state = generate_sop_questions(state)
+
+    questions = state.get("sop_questions", [])
+
+    # 모든 질문이 답변되었는지 확인
+    unanswered = [q for q in questions if not q.get("answer")]
+
+    if len(unanswered) > 0:
+
+        state["final_decision"] = {
+            "type": "sop_confirm_required",
+            "questions": questions
+        }
+
+    else:
+
+        state["is_completed"] = True
+        state["final_decision"] = "SOP 생성이 완료되었습니다."
+
+    return state
+
 
 def orchestrator(state: GlobalState):
 
-    print("ORCHESTRATOR")
+    safety = state.get("safety_result")
+    process = state.get("process_result")
 
-    safety = state["safety_result"]
-    process = state["process_result"]
-    sop = state.get("sop_validation_result") or state.get("sop_generation_result")
-    text = state.get("sop_generation_result")
+    sop = state.get("sop_generation_result") or state.get("sop_validation_result")
 
+    questions = state.get("sop_questions")
     print(f"safety : {safety}")
     print(f"process : {process}")
     print(f"sop : {sop}")
+    print(f"questions : {questions}")
+    score = 0  
 
-
-    score = 0
-
-    if safety and safety["risk_level"] == "HIGH":
+    if safety and safety.get("risk_level") == "HIGH":
         score += 100
 
-    if process and process["anomaly"]:
+    if process and process.get("anomaly"):
         score += 50
 
-    if sop and sop["deviation"]:
+    if sop and sop.get("deviation"):
         score += 30
 
-    if score >= 100:
-        decision = "danger"
+    if questions and not state.get("is_completed"):
 
-    elif score >= 50:
-        decision = "warn"
-
-    elif score >= 30:
-        decision = "warn"
+        state["final_decision"] = {
+            "type": "sop_confirm_required",
+            "questions": questions
+        }
 
     else:
-        decision = "info"
 
-    if text : 
-        state["final_decision"] = text.get("reason")
-    else:
+        if score >= 100:
+            decision = "danger"
+        elif score >= 50:
+            decision = "warn"
+        elif score >= 30:
+            decision = "warn"
+        else:
+            decision = "info"
+
         state["final_decision"] = decision
-        
+
     state["final_score"] = score
-    print("FINAL DECISION:", decision)
 
     return state
+
 def route_after_process(state: GlobalState):
     if state["process_result"].get("anomaly") == True:
         # DB에 없는 공정이면 생성 에이전트로 이동
@@ -623,7 +636,7 @@ builder.add_node("process_agent", process_agent)
 builder.add_node("safety_agent", safety_agent)
 builder.add_node("sop_agent", sop_agent)
 builder.add_node("sop_generator_agent", sop_generator_agent)
-
+builder.add_node("sop_question_agent", sop_question_agent)
 builder.add_node("orchestrator", orchestrator)
 
 builder.set_entry_point("init")
@@ -633,8 +646,8 @@ builder.add_edge("voice", "image")
 
 builder.add_edge("image", "merge")
 
-builder.add_edge("merge", "process_agent")
 builder.add_edge("merge", "safety_agent")
+builder.add_edge("safety_agent", "process_agent")
 
 builder.add_conditional_edges(
     "process_agent",
@@ -645,10 +658,10 @@ builder.add_conditional_edges(
     }
 )
 
-builder.add_edge("safety_agent", "orchestrator")
-builder.add_edge("sop_generator_agent", "orchestrator")
+builder.add_edge("sop_generator_agent", "sop_question_agent")
+builder.add_edge("sop_question_agent", "orchestrator")
 builder.add_edge("sop_agent", "orchestrator")
-
+builder.set_finish_point("orchestrator")
 graph = builder.compile()
 
 # ==============================
@@ -662,53 +675,69 @@ class ChatResponse(BaseModel):
     log_level: str
     diff_score : int
 @app.post("/sop", response_model=ChatResponse)
-
 async def chat(
-
     input: Optional[str] = Form(None),
     voice_file: Optional[UploadFile] = File(None),
     image_file: Optional[UploadFile] = File(None),
     session_id: str = Form(...)
-
 ):
 
     state = get_state(session_id)
 
-    if input:
-        state["input"] = input
-
     if voice_file:
-
         content = await voice_file.read()
-
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-
             tmp.write(content)
-
             state["voice_path"] = tmp.name
 
     if image_file:
-
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-
             tmp.write(await image_file.read())
-
             state["image_path"] = tmp.name
 
-    result = graph.invoke(state)
-    decision = result.get("final_decision","info")
-    if decision == 'danger':
-        level = 'danger'
-    elif decision == 'warn':
-        level = 'warn'
-    elif decision == 'info':
-        level = 'info'
-    else :
-        level = 'notice'
-    score = result.get("final_score",0)
+    if input:
+        state["input"] = input
+
+    # result = graph.invoke(state)
+
+    if state.get("sop_questions") and input:
+        # 현재 답변이 필요한 질문 인덱스 찾기
+        current_idx = state.get("current_question_index", 0)
+        questions = state["sop_questions"]
+        
+        if current_idx < len(questions):
+            questions[current_idx]["answer"] = input
+            state["current_question_index"] = current_idx + 1
+            
+        if state["current_question_index"] >= len(questions):
+            state["is_completed"] = True
+
+    print(f"start state :: {state}")
+
+    # ★ 중요: 호출 후 반환된 값을 다시 세션에 저장
+    updated_state = graph.invoke(state)
+    SESSION_STORE[session_id] = updated_state
+
+    final_decision = updated_state.get("final_decision")
+
+    decision = updated_state.get("final_decision", "info")
+    score = updated_state.get("final_score", 0)
+
+    if decision == 'danger': level = 'danger'
+    elif decision == 'warn': level = 'warn'
+    elif decision == 'info': level = 'info'
+    else: level = 'notice'
+
+    if isinstance(decision, dict):
+
+        return ChatResponse(
+            response=json.dumps(decision, ensure_ascii=False),
+            log_level="notice",
+            diff_score=0
+        )
 
     return ChatResponse(
-        response=result["final_decision"],
+        response=str(decision),
         log_level=level,
         diff_score=score
     )

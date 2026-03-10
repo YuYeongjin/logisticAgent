@@ -1,5 +1,3 @@
-# process_agent.py
-
 import json
 from typing import TypedDict, Optional, Dict, Any
 from enum import Enum
@@ -42,15 +40,11 @@ def get_db_connection():
 # ===============================
 
 class ProcessState(TypedDict):
-
     observation: Dict
-
+    observation_id: Optional[int]
     detected_process: Optional[str]
-
     process_anomaly: bool
-
     db_process: Optional[Dict]
-
     result: Dict
 
 
@@ -78,6 +72,40 @@ def retrieve_process(process_name: str):
 
     return row
 
+def save_observation(state: ProcessState):
+
+    obs = state["observation"]
+
+    text = obs.get("text")
+    voice = obs.get("voice")
+    vision = obs.get("vision")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO tbl_ai_observation
+        (text_input, voice_text, vision_json)
+        VALUES (%s, %s, %s)
+        RETURNING id
+        """,
+        (
+            text,
+            voice,
+            json.dumps(vision)
+        )
+    )
+
+    observation_id = cur.fetchone()["id"]
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    state["observation_id"] = observation_id
+
+    return state
 
 # ===============================
 # 공정 판단
@@ -85,7 +113,7 @@ def retrieve_process(process_name: str):
 
 def detect_process(state: ProcessState):
 
-    print("PROCESS DETECT")
+    # print("PROCESS DETECT")
 
     obs = state["observation"]
 
@@ -124,7 +152,7 @@ def detect_process(state: ProcessState):
 
 def process_retrieve(state: ProcessState):
 
-    print("PROCESS RETRIEVE")
+    # print("PROCESS RETRIEVE")
 
     process = state.get("detected_process")
 
@@ -147,7 +175,7 @@ def process_retrieve(state: ProcessState):
 
 def process_anomaly_check(state: ProcessState):
 
-    print("PROCESS ANOMALY CHECK")
+    # print("PROCESS ANOMALY CHECK")
 
     obs = state["observation"]
 
@@ -235,6 +263,10 @@ def run_process_agent(observation):
         "observation": observation
 
     }
+
+
+    # 1 observation 저장
+    state = save_observation(state)
 
     state = detect_process(state)
 

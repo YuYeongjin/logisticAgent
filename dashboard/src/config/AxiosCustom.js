@@ -5,7 +5,7 @@ const baseURL = "http://192.168.10.20:6060";
 
 const AxiosCustom = axios.create({
     baseURL: baseURL,
-    headers: { "Content-Type": "application/json" },
+    withCredentials: true
 });
 
 

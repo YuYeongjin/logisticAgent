@@ -44,3 +44,4 @@ agent/Historical_Product_Demand_small.csv
 
 infra/data/minio/*
 infra/data/postgres/*
+agent/__pycache__/*

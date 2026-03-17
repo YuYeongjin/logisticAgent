@@ -332,7 +332,7 @@ class GlobalState(TypedDict):
 
     voice_path: Optional[str]
     image_path: Optional[str]
-
+    conversation_history: list[dict[str, str]]
     voice_text: Optional[str]
     image_analysis: Optional[Dict]
 
@@ -368,7 +368,7 @@ def get_state(session_id: str):
 
             "voice_text": None,
             "image_analysis": None,
-
+            "conversation_history": [],
             "observation": {},
 
             "process_result": {},
@@ -400,6 +400,7 @@ def init_node(state: GlobalState):
     state.setdefault("safety_result", {})
     state.setdefault("sop_validation_result", {})
     state.setdefault("sop_generation_result", {})
+    state.setdefault("conversation_history", [])
     # 질문 관련 초기화 (기존 데이터 유지 위해 setdefault)
     state.setdefault("sop_questions", None)
     state.setdefault("current_question_index", 0)
@@ -482,16 +483,16 @@ def merge_inputs(state: GlobalState):
 
     }
 
-    state["observation"] = observation
-
-    # print("OBSERVATION:", observation)
+    # 새로운 기록 생성
+    new_history = list(state.get("conversation_history", []))
     if state.get("input"):
-        state["conversation_history"].append({
-            "role": "user",
-            "content": state["input"]
-        })
+        new_history.append({"role": "user", "content": state["input"]})
 
-    return state
+    # 업데이트된 상태 반환
+    return {
+        "observation": observation,
+        "conversation_history": new_history
+    }
 
 # ==============================
 # AGENTS

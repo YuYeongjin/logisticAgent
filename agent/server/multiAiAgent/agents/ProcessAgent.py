@@ -1,277 +1,227 @@
+"""
+ProcessAgent - 제조 공정 감지 및 이상 탐지 에이전트
+
+Graph:
+    save_observation → detect_process → retrieve_db_process → check_anomaly
+"""
 import json
-from typing import TypedDict, Optional, Dict, Any
-from enum import Enum
+from typing import TypedDict, Dict, Optional
 
-import psycopg2
-from psycopg2.extras import RealDictCursor
+from langgraph.graph import StateGraph, END
 
-from langchain_ollama import ChatOllama
+from agents.config import llm_json, get_db_connection
 
 
-# ===============================
-# LLM
-# ===============================
-
-llm_json = ChatOllama(
-    model="llama3.1",
-    temperature=0,
-    format="json",
-    base_url="http://localhost:11434"
-)
-
-# ===============================
-# Database
-# ===============================
-
-DB_CONFIG = {
-    "host": "localhost",
-    "database": "factory_db",
-    "user": "admin",
-    "password": "Abcd1234",
-    "port": "5432"
-}
-
-def get_db_connection():
-    return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
-
-
-# ===============================
-# Process Model
-# ===============================
+# ==============================
+# State
+# ==============================
 
 class ProcessState(TypedDict):
-    observation: Dict
-    observation_id: Optional[int]
-    detected_process: Optional[str]
-    process_anomaly: bool
-    db_process: Optional[Dict]
-    result: Dict
+    observation:      Dict
+    observation_id:   Optional[int]
+    detected_process: str
+    db_process:       Optional[Dict]
+    process_anomaly:  bool
+    anomaly_reason:   str
+    result:           Dict
 
 
-# ===============================
-# DB 조회
-# ===============================
+# ==============================
+# Node 1: 관찰 데이터 저장
+# ==============================
 
-def retrieve_process(process_name: str):
-
+def save_observation(state: ProcessState) -> Dict:
+    obs  = state["observation"]
     conn = get_db_connection()
-
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT *
-        FROM tbl_sop
-        WHERE name = %s
-        LIMIT 1
-    """, (process_name,))
-
-    row = cur.fetchone()
-
-    cur.close()
-    conn.close()
-
-    return row
-
-def save_observation(state: ProcessState):
-
-    obs = state["observation"]
-
-    text = obs.get("text")
-    voice = obs.get("voice")
-    vision = obs.get("vision")
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        INSERT INTO tbl_ai_observation
-        (text_input, voice_text, vision_json)
-        VALUES (%s, %s, %s)
-        RETURNING id
-        """,
-        (
-            text,
-            voice,
-            json.dumps(vision)
+    cur  = conn.cursor()
+    observation_id = None
+    
+    try:
+        cur.execute(
+            """
+            INSERT INTO tbl_ai_observation (text_input, voice_text, vision_json)
+            VALUES (%s, %s, %s)
+            RETURNING id
+            """,
+            (
+                obs.get("text"),
+                obs.get("voice"),
+                json.dumps(obs.get("vision")),
+            ),
         )
-    )
+        observation_id = cur.fetchone()[0] # 커서 타입에 따라 안전하게 인덱스 접근
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+        
+    # 변경된 상태만 반환합니다.
+    return {"observation_id": observation_id}
 
-    observation_id = cur.fetchone()["id"]
 
-    conn.commit()
-    cur.close()
-    conn.close()
+# ==============================
+# Node 2: 공정 감지 (LLM)
+# ==============================
 
-    state["observation_id"] = observation_id
-
-    return state
-
-# ===============================
-# 공정 판단
-# ===============================
-
-def detect_process(state: ProcessState):
-
-    # print("PROCESS DETECT")
-
-    obs = state["observation"]
+def detect_process(state: ProcessState) -> Dict:
+    obs    = state["observation"]
+    vision = obs.get("vision") or {}
+    scene  = (vision.get("scene") or {})
 
     prompt = f"""
-    다음 작업 상황을 보고 현재 수행 중인 제조 공정을 판단하라.
+작업 현장 데이터를 보고 현재 수행 중인 제조 공정 이름을 판단하라.
 
-    observation:
-    {json.dumps(obs, ensure_ascii=False)}
+텍스트 입력:   {obs.get("text") or "없음"}
+음성 입력:     {obs.get("voice") or "없음"}
+작업자 활동:   {scene.get("human_activity", "없음")}
+사용 도구:     {json.dumps(scene.get("tools", []), ensure_ascii=False)}
+감지된 객체:   {[o["label"] for o in vision.get("objects", [])]}
 
-    가능한 공정 예시:
-    - cutting
-    - mixing
-    - packaging
-    - heating
-    - unknown
+가능한 공정 예시: cutting, mixing, packaging, heating, assembly, welding, inspection, unknown
 
-    반드시 JSON으로 출력
+반드시 아래 JSON 형식으로만 응답:
+{{"process": "공정명"}}
+"""
+    try:
+        res  = llm_json.invoke(prompt)
+        data = json.loads(res.content)
+        detected_process = data.get("process", "unknown")
+    except (json.JSONDecodeError, KeyError):
+        detected_process = "unknown"
 
-    {{
-        "process": "공정명"
-    }}
-    """
-
-    res = llm_json.invoke(prompt)
-
-    data = json.loads(res.content)
-
-    state["detected_process"] = data["process"]
-
-    return state
+    return {"detected_process": detected_process}
 
 
-# ===============================
-# 공정 DB 조회
-# ===============================
+# ==============================
+# Node 3: DB에서 표준 공정 조회
+# ==============================
 
-def process_retrieve(state: ProcessState):
-
-    # print("PROCESS RETRIEVE")
-
-    process = state.get("detected_process")
-
-    if not process or process == "unknown":
-
-        state["db_process"] = None
-
-        return state
-
-    result = retrieve_process(process)
-
-    state["db_process"] = result
-
-    return state
-
-
-# ===============================
-# 공정 이상 판단
-# ===============================
-
-def process_anomaly_check(state: ProcessState):
-
-    # print("PROCESS ANOMALY CHECK")
-
-    obs = state["observation"]
-
-    db_process = state.get("db_process")
-
+def retrieve_db_process(state: ProcessState) -> Dict:
     process = state.get("detected_process", "unknown")
 
-    # DB에 공정이 없는 경우
+    if process == "unknown":
+        return {"db_process": None}
+
+    conn = get_db_connection()
+    cur  = conn.cursor() # DB 설정에 따라 DictCursor 사용 시 dict() 래핑 필요
+    db_process = None
+    
+    try:
+        cur.execute(
+            """
+            SELECT s.id, s.name, p.description,
+                   p.name AS process_name
+            FROM tbl_sop s
+            JOIN tbl_process p ON s.process_id = p.id
+            WHERE p.name = %s
+            LIMIT 1
+            """,
+            (process,),
+        )
+        row = cur.fetchone()
+        
+        # CursorFactory가 DictCursor라면 바로 row, 일반 Cursor라면 키 매핑 필요
+        db_process = dict(row) if row else None
+    finally:
+        cur.close()
+        conn.close()
+
+    return {"db_process": db_process}
+
+
+# ==============================
+# Node 4: 이상 판단 (LLM)
+# ==============================
+
+def check_anomaly(state: ProcessState) -> Dict:
+    obs        = state["observation"]
+    db_process = state.get("db_process")
+    process    = state.get("detected_process", "unknown")
+
+    # DB에 공정이 없으면 신규 공정으로 간주
     if not db_process:
-
-        state["process_anomaly"] = True
-
-        state["result"] = {
-
-            "process": process,
-
-            "anomaly": True,
-
-            "reason": "DB에 정의되지 않은 공정"
-
+        reason = "DB에 정의되지 않은 신규 공정"
+        return {
+            "process_anomaly": True,
+            "anomaly_reason":  reason,
+            "result": {
+                "process": process,
+                "anomaly": True,
+                "reason":  reason,
+            }
         }
 
-        return state
-
     prompt = f"""
-    현재 작업 상황과 표준 공정을 비교하여
-    공정 이상 여부를 판단하라.
+현재 작업 상황과 표준 공정을 비교하여 이상 여부를 판단하라.
 
-    현재 작업:
-    {json.dumps(obs, ensure_ascii=False)}
+현재 작업:
+{json.dumps(obs, ensure_ascii=False, indent=2)}
 
-    표준 공정:
-    {json.dumps(db_process, ensure_ascii=False)}
+표준 공정:
+{json.dumps(db_process, ensure_ascii=False, indent=2)}
 
-    반드시 JSON 출력
-
-    {{
-        "anomaly": true or false,
-        "reason": "설명"
-    }}
-    """
-
+반드시 아래 JSON 형식으로만 응답:
+{{"anomaly": true | false, "reason": "한국어 설명"}}
+"""
     try:
-
-        res = llm_json.invoke(prompt)
-
-        data = json.loads(res.content)
-
+        res    = llm_json.invoke(prompt)
+        data   = json.loads(res.content)
         anomaly = data.get("anomaly", False)
-
-        reason = data.get("reason", "")
-
+        reason  = data.get("reason", "")
     except Exception as e:
+        anomaly = False
+        reason  = f"분석 중 오류: {e}"
 
-        print("LLM ERROR:", e)
-
-        anomaly = True
-
-        reason = "LLM 분석 실패"
-
-    state["process_anomaly"] = anomaly
-
-    state["result"] = {
-
-        "process": process,
-
-        "anomaly": anomaly,
-
-        "reason": reason
-
-    }
-
-    return state
-
-
-
-# ===============================
-# Main Runner
-# ===============================
-
-def run_process_agent(observation):
-
-    state: ProcessState = {
-
-        "observation": observation
-
+    return {
+        "process_anomaly": anomaly,
+        "anomaly_reason":  reason,
+        "result": {
+            "process": process,
+            "anomaly": anomaly,
+            "reason":  reason,
+        }
     }
 
 
-    # 1 observation 저장
-    state = save_observation(state)
+# ==============================
+# Graph 빌드
+# ==============================
 
-    state = detect_process(state)
+_builder = StateGraph(ProcessState)
+_builder.add_node("save_observation",   save_observation)
+_builder.add_node("detect_process",     detect_process)
+_builder.add_node("retrieve_db_process", retrieve_db_process)
+_builder.add_node("check_anomaly",      check_anomaly)
 
-    state = process_retrieve(state)
+_builder.set_entry_point("save_observation")
+_builder.add_edge("save_observation",    "detect_process")
+_builder.add_edge("detect_process",      "retrieve_db_process")
+_builder.add_edge("retrieve_db_process", "check_anomaly")
 
-    state = process_anomaly_check(state)
+# set_finish_point 대신 최신 방식인 END 노드로 연결합니다.
+_builder.add_edge("check_anomaly", END)
 
-    return state["result"]
+process_graph = _builder.compile()
+
+
+# ==============================
+# 공개 인터페이스
+# ==============================
+
+def run_process_agent(observation: Dict) -> Dict:
+    """
+    Returns:
+        {"process": str, "anomaly": bool, "reason": str}
+    """
+    result = process_graph.invoke({
+        "observation":      observation,
+        "observation_id":   None,
+        "detected_process": "unknown",
+        "db_process":       None,
+        "process_anomaly":  False,
+        "anomaly_reason":   "",
+        "result":           {},
+    })
+    return result.get("result", {})

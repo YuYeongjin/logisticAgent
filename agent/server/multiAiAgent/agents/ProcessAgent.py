@@ -111,7 +111,8 @@ def retrieve_db_process(state: ProcessState) -> Dict:
     try:
         cur.execute(
             """
-            SELECT s.id, s.name, p.description,
+            SELECT s.id, s.name,
+                   s.purpose, s.input, s.work, s.condition,
                    p.name AS process_name
             FROM tbl_sop s
             JOIN tbl_process p ON s.process_id = p.id

@@ -72,7 +72,8 @@ def retrieve_sop(state: SopCheckState) -> SopCheckState:
     try:
         cur.execute(
             """
-            SELECT s.id, s.name, p.description
+            SELECT s.id, s.name,
+                   s.purpose, s.input, s.work, s.condition
             FROM tbl_sop s
             JOIN tbl_process p ON s.process_id = p.id
             WHERE p.name = %s
@@ -127,7 +128,10 @@ def analyze_deviation(state: SopCheckState) -> SopCheckState:
 
 ### 표준 SOP
 이름:   {db_sop.get("name")}
-설명:   {db_sop.get("description")}
+목적:   {db_sop.get("purpose", "")}
+투입:   {db_sop.get("input", "")}
+작업:   {db_sop.get("work", "")}
+조건:   {db_sop.get("condition", "")}
 단계:
 {json.dumps(sop_steps, ensure_ascii=False, indent=2)}
 
